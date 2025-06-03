@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 import chess
 
+class InvalidMoveError(Exception):
+    """Raised when an illegal move is attempted."""
+
+
 Piece = str
 
 
@@ -14,7 +18,10 @@ def _piece_type_from_letter(letter: str) -> chess.PieceType:
         'q': chess.QUEEN,
         'k': chess.KING,
     }
-    return mapping[letter.lower()]
+    try:
+        return mapping[letter.lower()]
+    except KeyError as exc:
+        raise ValueError(f"Invalid promotion piece: {letter}") from exc
 
 
 @dataclass
@@ -26,17 +33,20 @@ class Move:
 
 class Board:
     def __init__(self, fen: str = "startpos"):
-        if fen == "startpos":
-            self._board = chess.Board()
-        else:
-            self._board = chess.Board(fen)
+        try:
+            self._board = chess.Board() if fen == "startpos" else chess.Board(fen)
+        except ValueError as exc:
+            raise ValueError(f"Invalid FEN string: {fen}") from exc
 
     @property
     def turn(self) -> str:
         return 'w' if self._board.turn == chess.WHITE else 'b'
 
     def set_fen(self, fen: str) -> None:
-        self._board.set_fen(fen)
+        try:
+            self._board.set_fen(fen)
+        except ValueError as exc:
+            raise ValueError(f"Invalid FEN string: {fen}") from exc
 
     def get_fen(self) -> str:
         return self._board.fen()
@@ -61,6 +71,8 @@ class Board:
         if move.promotion:
             promotion = _piece_type_from_letter(move.promotion)
         m = chess.Move(move.from_square, move.to_square, promotion=promotion)
+        if m not in self._board.legal_moves:
+            raise InvalidMoveError(f"Illegal move: {m.uci()}")
         self._board.push(m)
 
     def is_game_over(self) -> bool:
