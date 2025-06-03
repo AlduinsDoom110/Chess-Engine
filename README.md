@@ -47,3 +47,14 @@ python3 main.py
 
 Enter moves in coordinate notation such as `e2e4` or, for promotions,
 `e7e8q`.
+
+### Using the engine with UCI
+
+The repository also includes a minimal [UCI](https://en.wikipedia.org/wiki/Universal_Chess_Interface)
+driver.  Run `uci.py` and connect to it from any UCI compatible GUI:
+
+```bash
+python3 uci.py
+```
+
+Only a subset of the protocol is supported (e.g. `position` and `go depth N`).
