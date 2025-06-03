@@ -1,10 +1,18 @@
-from board import Board, Move
+from board import Board, Move, InvalidMoveError
 from engine import find_best_move
 
 
 def parse_move(move_str: str) -> int:
-    file = ord(move_str[0]) - ord('a')
-    rank = int(move_str[1]) - 1
+    if len(move_str) != 2:
+        raise ValueError(f"Invalid square notation: {move_str}")
+    file_char, rank_char = move_str[0], move_str[1]
+    if file_char < 'a' or file_char > 'h' or not rank_char.isdigit():
+        raise ValueError(f"Invalid square notation: {move_str}")
+    rank_num = int(rank_char)
+    if rank_num < 1 or rank_num > 8:
+        raise ValueError(f"Invalid square notation: {move_str}")
+    file = ord(file_char) - ord('a')
+    rank = rank_num - 1
     return rank * 8 + file
 
 
@@ -23,10 +31,14 @@ def main() -> None:
             user_move = input('Enter your move (e.g., e2e4 or e7e8q): ')
             if len(user_move) < 4:
                 break
-            frm = parse_move(user_move[:2])
-            to = parse_move(user_move[2:4])
-            promotion = user_move[4] if len(user_move) > 4 else None
-            board.push(Move(frm, to, promotion))
+            try:
+                frm = parse_move(user_move[:2])
+                to = parse_move(user_move[2:4])
+                promotion = user_move[4] if len(user_move) > 4 else None
+                board.push(Move(frm, to, promotion))
+            except (ValueError, InvalidMoveError) as e:
+                print(f'Invalid move: {e}')
+                continue
         else:
             best = find_best_move(board, depth)
             if best is None:
