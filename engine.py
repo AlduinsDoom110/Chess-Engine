@@ -332,8 +332,14 @@ class _TTEntry:
 # Transposition table and heuristics
 _TT: dict = {}
 _HISTORY: dict = {}
+_BUTTERFLY: dict = {}
+_CAPTURE_HISTORY: dict = {}
 _KILLERS = [[None, None] for _ in range(64)]
 _COUNTER: dict = {}
+_NODE_LIMIT: Optional[int] = None
+
+CHECK_EXTENSION_DEPTH = 8
+DELTA_MARGIN = 200
 
 
 def _eval_for_side(board: Board, ply: int) -> int:
@@ -369,6 +375,13 @@ def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
     _order_moves(board, moves, None, ply, None)
 
     for m in moves:
+        cm = _to_chess_move(m)
+        if board._board.is_capture(cm):
+            captured = board._board.piece_at(cm.to_square)
+            if captured:
+                value = PIECE_VALUES[captured.piece_type]
+                if stand_pat + value + DELTA_MARGIN <= alpha:
+                    continue
         child = board.copy()
         child.push(m)
         score = -_quiescence(child, -beta, -alpha, ply + 1)
@@ -387,6 +400,10 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
         cm = _to_chess_move(m)
         if board._board.is_capture(cm):
             s += 100_000 + _see(board, m)
+            attacker = board._board.piece_at(cm.from_square)
+            target = board._board.piece_at(cm.to_square)
+            if attacker and target:
+                s += _CAPTURE_HISTORY.get((attacker.piece_type, target.piece_type), 0)
         elif board._board.gives_check(cm):
             s += 90_000
         km = _KILLERS[ply]
@@ -396,7 +413,9 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
             s += 800_000
         if prev and _COUNTER.get((prev.from_square, prev.to_square)) == m:
             s += 700_000
-        s += _HISTORY.get((m.from_square, m.to_square), 0)
+        hist = _HISTORY.get((m.from_square, m.to_square), 0)
+        bfly = _BUTTERFLY.get((m.from_square, m.to_square), 1)
+        s += hist // bfly
         return -s
 
     moves.sort(key=score)
@@ -404,6 +423,14 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
 
 def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
              prev: Optional[Move], allow_null: bool = True) -> int:
+    global _NODE_LIMIT
+    if _NODE_LIMIT is not None:
+        if _NODE_LIMIT <= 0:
+            return _eval_for_side(board, ply)
+        _NODE_LIMIT -= 1
+
+    if board.is_check() and depth < CHECK_EXTENSION_DEPTH:
+        depth += 1
     alpha = max(alpha, -MATE_VALUE + ply)
     beta = min(beta, MATE_VALUE - ply)
     if alpha >= beta:
@@ -490,7 +517,13 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
                 score = -_negamax(child, depth - 1 + ext, -beta, -alpha,
                                   ply + 1, m)
         if score >= beta:
-            if not capture:
+            if capture:
+                attacker = board._board.piece_at(cm.from_square)
+                target = board._board.piece_at(cm.to_square)
+                if attacker and target:
+                    key_cap = (attacker.piece_type, target.piece_type)
+                    _CAPTURE_HISTORY[key_cap] = _CAPTURE_HISTORY.get(key_cap, 0) + depth * depth
+            else:
                 if _KILLERS[ply][0] != m:
                     _KILLERS[ply][1] = _KILLERS[ply][0]
                     _KILLERS[ply][0] = m
@@ -502,6 +535,8 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         if score > alpha:
             alpha = score
             best_move = m
+        if not capture:
+            _BUTTERFLY[(m.from_square, m.to_square)] = _BUTTERFLY.get((m.from_square, m.to_square), 0) + 1
     if best_move is None:
         _TT[key] = _TTEntry(depth, alpha, 2, None)
     else:
@@ -538,11 +573,15 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     return best_move, alpha
 
 
-def find_best_move(board: Board, depth: int) -> Optional[Move]:
+def find_best_move(board: Board, depth: int, node_limit: Optional[int] = None) -> Optional[Move]:
+    global _NODE_LIMIT
     best_move: Optional[Move] = None
     score = 0
     window = 50
     for d in range(1, depth + 1):
+        for k in list(_CAPTURE_HISTORY.keys()):
+            _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
+        _NODE_LIMIT = node_limit
         alpha = score - window
         beta = score + window
         while True:
@@ -558,4 +597,7 @@ def find_best_move(board: Board, depth: int) -> Optional[Move]:
             else:
                 best_move, score = move, val
                 break
+        if _NODE_LIMIT is not None and _NODE_LIMIT <= 0:
+            break
+    _NODE_LIMIT = None
     return best_move
