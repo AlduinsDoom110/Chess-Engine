@@ -664,6 +664,38 @@ def _search_move_thread(args: tuple[Board, Move, int]) -> tuple[Move, int]:
     return move, value
 
 
+def _lazy_smp_worker(args: tuple[Board, int, Optional[int]]) -> tuple[Optional[Move], int]:
+    """Run an iterative deepening search used by Lazy SMP workers."""
+    board, depth, node_limit = args
+    global _NODE_LIMIT
+    best_move: Optional[Move] = None
+    score = 0
+    window = 50
+    for d in range(1, depth + 1):
+        for k in list(_CAPTURE_HISTORY.keys()):
+            _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
+        _NODE_LIMIT = node_limit
+        alpha = score - window
+        beta = score + window
+        while True:
+            move, val = _search_root(board, d, alpha, beta)
+            if val <= alpha:
+                alpha -= window
+                beta = val + window
+                window *= 2
+            elif val >= beta:
+                beta += window
+                alpha = val - window
+                window *= 2
+            else:
+                best_move, score = move, val
+                break
+        if _NODE_LIMIT is not None and _NODE_LIMIT <= 0:
+            break
+    _NODE_LIMIT = None
+    return best_move, score
+
+
 def find_best_move(
     board: Board,
     depth: int,
@@ -716,15 +748,30 @@ def find_best_move(
         _NODE_LIMIT = None
         return best_move
 
-    # Parallel search of root moves (no iterative deepening)
-    moves = board.generate_moves()
+    # Parallel search
     results: List[Tuple[Move, int]] = []
-    if threads <= 1:
-        _TT = {}
-        _TT_LOCK = None
-        for m in moves:
-            results.append(_search_move_thread((board, m, depth)))
+    if threads <= 1 or multipv > 1:
+        # Original root-parallel search for MultiPV or single-thread
+        moves = board.generate_moves()
+        if threads <= 1:
+            _TT = {}
+            _TT_LOCK = None
+            for m in moves:
+                results.append(_search_move_thread((board, m, depth)))
+        else:
+            manager = multiprocessing.Manager()
+            shared_tt = manager.dict()
+            lock = manager.Lock()
+            _TT = shared_tt
+            _TT_LOCK = lock
+            with ProcessPoolExecutor(max_workers=threads,
+                                    initializer=_init_worker,
+                                    initargs=(shared_tt, lock)) as pool:
+                futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
+                for f in futs:
+                    results.append(f.result())
     else:
+        # Lazy SMP style search with shared transposition table
         manager = multiprocessing.Manager()
         shared_tt = manager.dict()
         lock = manager.Lock()
@@ -733,7 +780,7 @@ def find_best_move(
         with ProcessPoolExecutor(max_workers=threads,
                                 initializer=_init_worker,
                                 initargs=(shared_tt, lock)) as pool:
-            futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
+            futs = [pool.submit(_lazy_smp_worker, (board, depth, node_limit)) for _ in range(threads)]
             for f in futs:
                 results.append(f.result())
 
