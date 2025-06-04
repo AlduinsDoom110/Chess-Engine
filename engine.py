@@ -442,6 +442,12 @@ _NODE_LIMIT: Optional[int] = None
 CHECK_EXTENSION_DEPTH = 8
 DELTA_MARGIN = 200
 
+# Search parameters tuned via automated SPSA
+NULL_MOVE_REDUCTION = 3
+LMR_BASE = 0.75
+LMR_DIV = 1.9
+SEE_PRUNE_THRESHOLD = -50
+
 
 def _init_worker(shared_array, lock) -> None:
     """Initializer for worker processes to share the transposition table."""
@@ -626,12 +632,14 @@ def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
                 value = PIECE_VALUES[captured.piece_type]
                 if stand_pat + value + DELTA_MARGIN <= alpha:
                     continue
-        child = board.copy()
+        if board._board.is_capture(cm) and _see(board, m) < SEE_PRUNE_THRESHOLD:
+            continue
         try:
-            child.push(m)
+            board.push(m)
         except InvalidMoveError:
             continue
-        score = -_quiescence(child, -beta, -alpha, ply + 1)
+        score = -_quiescence(board, -beta, -alpha, ply + 1)
+        board.pop()
         if score >= beta:
             return beta
         if score > alpha:
@@ -655,14 +663,13 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
                 s += AGGRESSION_BONUS
         elif board._board.gives_check(cm):
             s += 90_000 + AGGRESSION_BONUS // 2
-            child = board.copy()
             try:
-                child.push(m)
+                board.push(m)
+                if board._board.is_checkmate():
+                    s += 2_000_000
+                board.pop()
             except InvalidMoveError:
                 pass
-            else:
-                if child._board.is_checkmate():
-                    s += 2_000_000
         km = _KILLERS[ply]
         if km[0] and m == km[0]:
             s += 900_000
@@ -724,11 +731,11 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
 
     # Null move pruning with verification search
     if allow_null and depth >= 3 and not board.is_check():
-        r = 2
-        null_board = board.copy()
-        null_board.push_null()
-        score = -_negamax(null_board, depth - 1 - r, -beta, -beta + 1, ply + 1,
+        r = NULL_MOVE_REDUCTION
+        board.push_null()
+        score = -_negamax(board, depth - 1 - r, -beta, -beta + 1, ply + 1,
                           None, False)
+        board.pop()
         if score >= beta:
             verify = _negamax(board, depth - 1, alpha, beta, ply, prev, False)
             if verify >= beta:
@@ -739,13 +746,13 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         mc_moves = board.generate_moves()[:6]
         cut = 0
         for m in mc_moves:
-            child = board.copy()
             try:
-                child.push(m)
+                board.push(m)
             except InvalidMoveError:
                 continue
-            score = -_negamax(child, depth - 2, -beta, -beta + 1, ply + 1, m,
+            score = -_negamax(board, depth - 2, -beta, -beta + 1, ply + 1, m,
                               False)
+            board.pop()
             if score >= beta:
                 cut += 1
                 if cut >= 3:
@@ -758,37 +765,42 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
 
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
-        child = board.copy()
-        try:
-            child.push(m)
-        except InvalidMoveError:
-            continue
         cm = _to_chess_move(m)
         capture = board._board.is_capture(cm)
         give_check = board._board.gives_check(cm)
-        threat = _threatens_mate(child)
-        if capture and _see(board, m) > 0 and _mate_in_two(child):
+        if capture and _see(board, m) < SEE_PRUNE_THRESHOLD and not give_check:
+            continue
+        enemy_king_sq = board._board.king(not board._board.turn)
+        before_dist = chess.square_distance(m.from_square, enemy_king_sq) if enemy_king_sq is not None else 7
+        after_dist = chess.square_distance(m.to_square, enemy_king_sq) if enemy_king_sq is not None else 7
+        converges = enemy_king_sq is not None and after_dist < before_dist
+        try:
+            board.push(m)
+        except InvalidMoveError:
+            continue
+        threat = _threatens_mate(board)
+        if capture and _see(board, m) > 0 and _mate_in_two(board):
+            board.pop()
             continue
         ext = 1 if singular else 0
         if give_check or threat:
             ext += 1
 
         if i == 0:
-            score = -_negamax(child, depth - 1 + ext, -beta, -alpha, ply + 1, m)
+            score = -_negamax(board, depth - 1 + ext, -beta, -alpha, ply + 1, m)
         else:
-            enemy_king_sq = board._board.king(not board._board.turn)
-            before_dist = chess.square_distance(m.from_square, enemy_king_sq) if enemy_king_sq is not None else 7
-            after_dist = chess.square_distance(m.to_square, enemy_king_sq) if enemy_king_sq is not None else 7
-            converges = enemy_king_sq is not None and after_dist < before_dist
-            reduction = 1 if depth >= 3 and i >= 3 and not capture and not give_check and not converges else 0
-            score = -_negamax(child, depth - 1 - reduction + ext, -alpha - 1,
+            reduction = 0
+            if depth >= 3 and i >= 3 and not capture and not give_check and not converges:
+                reduction = int(LMR_BASE + math.log(depth) * math.log(i + 1) / LMR_DIV)
+            score = -_negamax(board, depth - 1 - reduction + ext, -alpha - 1,
                               -alpha, ply + 1, m)
             if score > alpha and reduction:
-                score = -_negamax(child, depth - 1 + ext, -alpha - 1, -alpha,
+                score = -_negamax(board, depth - 1 + ext, -alpha - 1, -alpha,
                                   ply + 1, m)
             if score > alpha and score < beta:
-                score = -_negamax(child, depth - 1 + ext, -beta, -alpha,
+                score = -_negamax(board, depth - 1 + ext, -beta, -alpha,
                                   ply + 1, m)
+        board.pop()
         if score >= beta:
             if capture:
                 attacker = board._board.piece_at(cm.from_square)
@@ -827,18 +839,23 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
 
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
-        child = board.copy()
+        cm = _to_chess_move(m)
+        capture = board._board.is_capture(cm)
         try:
-            child.push(m)
+            board.push(m)
         except InvalidMoveError:
             continue
         ext = 1 if singular else 0
         if i == 0:
-            score = -_negamax(child, depth - 1 + ext, -beta, -alpha, 1, m)
+            score = -_negamax(board, depth - 1 + ext, -beta, -alpha, 1, m)
         else:
-            score = -_negamax(child, depth - 1 + ext, -alpha - 1, -alpha, 1, m)
+            reduction = 0
+            if depth >= 3 and i >= 3 and not capture:
+                reduction = int(LMR_BASE + math.log(depth) * math.log(i + 1) / LMR_DIV)
+            score = -_negamax(board, depth - 1 - reduction + ext, -alpha - 1, -alpha, 1, m)
             if score > alpha:
-                score = -_negamax(child, depth - 1 + ext, -beta, -alpha, 1, m)
+                score = -_negamax(board, depth - 1 + ext, -beta, -alpha, 1, m)
+        board.pop()
         if score > alpha:
             alpha = score
             best_move = m
