@@ -1,6 +1,6 @@
 from typing import Optional
 import chess
-from board import Board, Move, _piece_type_from_letter
+from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
 # Cache for attack maps keyed by occupancy bitboard
@@ -425,7 +425,10 @@ def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
                 if stand_pat + value + DELTA_MARGIN <= alpha:
                     continue
         child = board.copy()
-        child.push(m)
+        try:
+            child.push(m)
+        except InvalidMoveError:
+            continue
         score = -_quiescence(child, -beta, -alpha, ply + 1)
         if score >= beta:
             return beta
@@ -525,7 +528,10 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         cut = 0
         for m in mc_moves:
             child = board.copy()
-            child.push(m)
+            try:
+                child.push(m)
+            except InvalidMoveError:
+                continue
             score = -_negamax(child, depth - 2, -beta, -beta + 1, ply + 1, m,
                               False)
             if score >= beta:
@@ -541,7 +547,10 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
         child = board.copy()
-        child.push(m)
+        try:
+            child.push(m)
+        except InvalidMoveError:
+            continue
         cm = _to_chess_move(m)
         capture = board._board.is_capture(cm)
         ext = 1 if singular else 0
@@ -597,7 +606,10 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
         child = board.copy()
-        child.push(m)
+        try:
+            child.push(m)
+        except InvalidMoveError:
+            continue
         ext = 1 if singular else 0
         if i == 0:
             score = -_negamax(child, depth - 1 + ext, -beta, -alpha, 1, m)
