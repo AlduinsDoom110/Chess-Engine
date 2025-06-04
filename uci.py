@@ -55,20 +55,7 @@ def main() -> None:
         elif line == "isready":
             print("readyok")
         elif line.startswith("setoption"):
-            tokens = line.split()
-            if len(tokens) >= 5 and tokens[1] == "name" and tokens[3] == "value":
-                name = tokens[2].lower()
-                value = tokens[4]
-                if name == "threads":
-                    try:
-                        globals()["THREADS"] = max(1, int(value))
-                    except ValueError:
-                        pass
-                elif name == "multipv":
-                    try:
-                        globals()["MULTIPV"] = max(1, int(value))
-                    except ValueError:
-                        pass
+            # Options are ignored; engine runs with fixed parameters
             continue
         elif line == "ucinewgame":
             board = Board()
