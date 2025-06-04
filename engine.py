@@ -1,6 +1,7 @@
 from typing import Optional
 import chess
 from board import Board, Move, _piece_type_from_letter
+from bitboard_utils import popcount
 
 # Kaufman piece values used for the material imbalance evaluation
 PIECE_VALUES = {
@@ -243,7 +244,7 @@ def evaluate(board: Board, ply: int = 0) -> int:
             rank = chess.square_rank(sq)
 
             # Doubled pawns
-            if chess.popcount(int(pawns_bb & chess.BB_FILES[file])) > 1:
+            if popcount(int(pawns_bb & chess.BB_FILES[file])) > 1:
                 pawn_struct_score -= sign * DOUBLED_PAWN_PENALTY
 
             # Isolated pawns
