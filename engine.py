@@ -1,4 +1,6 @@
-from typing import Optional, Union, List, Tuple
+from __future__ import annotations
+
+from typing import Optional, Union, List, Tuple, TYPE_CHECKING
 import chess
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing
@@ -6,6 +8,9 @@ import struct
 import math
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
+
+if TYPE_CHECKING:
+    from opening_book import OpeningBook
 
 # Cache for attack maps keyed by occupancy bitboard
 _ATTACK_CACHE: dict[int, dict[int, int]] = {}
