@@ -1,6 +1,6 @@
 from typing import Optional, Union, List, Tuple
 import chess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
@@ -699,10 +699,8 @@ def find_best_move(
         for m in moves:
             results.append(_search_move_thread((board, m, depth)))
     else:
-        with ThreadPoolExecutor(max_workers=threads) as pool:
-            futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
-            for f in futs:
-                results.append(f.result())
+        with ProcessPoolExecutor(max_workers=threads) as pool:
+            results = list(pool.map(_search_move_thread, [(board, m, depth) for m in moves]))
 
     if not results:
         return None if multipv == 1 else []
