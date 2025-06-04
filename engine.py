@@ -356,7 +356,29 @@ def _to_chess_move(move: Move) -> chess.Move:
 
 
 def _see(board: Board, move: Move) -> int:
-    return board._board.see(_to_chess_move(move))
+    """Simplified Static Exchange Evaluation.
+
+    The original implementation relied on ``python-chess``'s ``Board.see``
+    method which is not available in the lightweight ``chess`` package that is
+    bundled with some environments.  To keep move ordering functional we
+    approximate SEE by considering the material gained or lost on the first
+    capture only.
+
+    This does not perfectly model longer capture sequences but gives a
+    reasonable ordering heuristic without depending on the missing API.
+    """
+
+    cm = _to_chess_move(move)
+    attacker = board._board.piece_at(cm.from_square)
+    captured = board._board.piece_at(cm.to_square)
+
+    if not attacker:
+        return 0
+
+    attacker_value = PIECE_VALUES.get(attacker.piece_type, 0)
+    captured_value = PIECE_VALUES.get(captured.piece_type, 0) if captured else 0
+
+    return captured_value - attacker_value
 
 
 def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
