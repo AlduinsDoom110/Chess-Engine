@@ -313,46 +313,138 @@ def evaluate(board: Board, ply: int = 0) -> int:
             space_score + tempo + initiative)
 
 
-def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool, ply: int = 0) -> int:
+# --- Search ---------------------------------------------------------------
+
+INFINITY = 10_000_000
+
+
+class _TTEntry:
+    __slots__ = ["depth", "value", "flag", "move"]
+
+    def __init__(self, depth: int, value: int, flag: int, move: Optional[Move]):
+        self.depth = depth
+        self.value = value
+        self.flag = flag  # 0 exact, 1 lower, 2 upper
+        self.move = move
+
+
+# Transposition table and heuristics
+_TT: dict = {}
+_HISTORY: dict = {}
+_KILLERS = [[None, None] for _ in range(64)]
+_COUNTER: dict = {}
+
+
+def _eval_for_side(board: Board, ply: int) -> int:
+    val = evaluate(board, ply)
+    return val if board.turn == "w" else -val
+
+
+def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, prev: Optional[Move]) -> None:
+    def score(m: Move) -> int:
+        s = 0
+        if tt_move and m == tt_move:
+            s += 1_000_000
+        km = _KILLERS[ply]
+        if km[0] and m == km[0]:
+            s += 900_000
+        elif km[1] and m == km[1]:
+            s += 800_000
+        if prev and _COUNTER.get((prev.from_square, prev.to_square)) == m:
+            s += 700_000
+        s += _HISTORY.get((m.from_square, m.to_square), 0)
+        return -s
+
+    moves.sort(key=score)
+
+
+def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int, prev: Optional[Move]) -> int:
     if depth == 0 or board.is_game_over():
-        return evaluate(board, ply)
+        return _eval_for_side(board, ply)
+
+    key = board._board._transposition_key()
+    entry: Optional[_TTEntry] = _TT.get(key)
+    if entry and entry.depth >= depth:
+        if entry.flag == 0:
+            return entry.value
+        if entry.flag == 1:
+            alpha = max(alpha, entry.value)
+        elif entry.flag == 2:
+            beta = min(beta, entry.value)
+        if alpha >= beta:
+            return entry.value
 
     moves = board.generate_moves()
-    if maximizing:
-        value = -float("inf")
-        for move in moves:
-            new_board = board.copy()
-            new_board.push(move)
-            value = max(value, minimax(new_board, depth - 1, alpha, beta, False, ply + 1))
-            alpha = max(alpha, value)
-            if alpha >= beta:
-                break
-        return value
+    tt_move = entry.move if entry else None
+    _order_moves(board, moves, tt_move, ply, prev)
+
+    best_move: Optional[Move] = None
+    for m in moves:
+        child = board.copy()
+        child.push(m)
+        score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
+        if score >= beta:
+            chess_move = chess.Move(m.from_square, m.to_square,
+                                   promotion=_piece_type_from_letter(m.promotion) if m.promotion else None)
+            if not board._board.is_capture(chess_move):
+                if _KILLERS[ply][0] != m:
+                    _KILLERS[ply][1] = _KILLERS[ply][0]
+                    _KILLERS[ply][0] = m
+                if prev:
+                    _COUNTER[(prev.from_square, prev.to_square)] = m
+                _HISTORY[(m.from_square, m.to_square)] = _HISTORY.get((m.from_square, m.to_square), 0) + depth * depth
+            _TT[key] = _TTEntry(depth, beta, 1, m)
+            return beta
+        if score > alpha:
+            alpha = score
+            best_move = m
+    if best_move is None:
+        _TT[key] = _TTEntry(depth, alpha, 2, None)
     else:
-        value = float("inf")
-        for move in moves:
-            new_board = board.copy()
-            new_board.push(move)
-            value = min(value, minimax(new_board, depth - 1, alpha, beta, True, ply + 1))
-            beta = min(beta, value)
-            if beta <= alpha:
-                break
-        return value
+        _TT[key] = _TTEntry(depth, alpha, 0, best_move)
+    return alpha
+
+
+def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optional[Move], int]:
+    key = board._board._transposition_key()
+    entry = _TT.get(key)
+    tt_move = entry.move if entry else None
+    moves = board.generate_moves()
+    _order_moves(board, moves, tt_move, 0, None)
+
+    best_move: Optional[Move] = None
+    for m in moves:
+        child = board.copy()
+        child.push(m)
+        score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
+        if score > alpha:
+            alpha = score
+            best_move = m
+        if alpha >= beta:
+            break
+    if best_move:
+        _TT[key] = _TTEntry(depth, alpha, 0, best_move)
+    return best_move, alpha
 
 
 def find_best_move(board: Board, depth: int) -> Optional[Move]:
-    best_value = -float("inf") if board.turn == "w" else float("inf")
     best_move: Optional[Move] = None
-    for move in board.generate_moves():
-        new_board = board.copy()
-        new_board.push(move)
-        value = minimax(new_board, depth - 1, -float("inf"), float("inf"), board.turn != "w", 1)
-        if board.turn == "w":
-            if value > best_value:
-                best_value = value
-                best_move = move
-        else:
-            if value < best_value:
-                best_value = value
-                best_move = move
+    score = 0
+    window = 50
+    for d in range(1, depth + 1):
+        alpha = score - window
+        beta = score + window
+        while True:
+            move, val = _search_root(board, d, alpha, beta)
+            if val <= alpha:
+                alpha -= window
+                beta = val + window
+                window *= 2
+            elif val >= beta:
+                beta += window
+                alpha = val - window
+                window *= 2
+            else:
+                best_move, score = move, val
+                break
     return best_move
