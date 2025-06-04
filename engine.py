@@ -3,6 +3,7 @@ import chess
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing
 import struct
+import math
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
