@@ -1,5 +1,6 @@
 from typing import Optional
 import chess
+import multiprocessing as mp
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
@@ -627,31 +628,52 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     return best_move, alpha
 
 
-def find_best_move(board: Board, depth: int, node_limit: Optional[int] = None) -> Optional[Move]:
+def _search_move_mp(args: tuple[Board, Move, int]) -> tuple[Move, int]:
+    board, move, depth = args
+    child = board.copy()
+    try:
+        child.push(move)
+    except InvalidMoveError:
+        return move, -INFINITY
+    value = -_negamax(child, depth - 1, -INFINITY, INFINITY, 1, move)
+    return move, value
+
+
+def find_best_move(board: Board, depth: int, node_limit: Optional[int] = None, workers: int = 1) -> Optional[Move]:
     global _NODE_LIMIT
     best_move: Optional[Move] = None
     score = 0
     window = 50
-    for d in range(1, depth + 1):
-        for k in list(_CAPTURE_HISTORY.keys()):
-            _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
-        _NODE_LIMIT = node_limit
-        alpha = score - window
-        beta = score + window
-        while True:
-            move, val = _search_root(board, d, alpha, beta)
-            if val <= alpha:
-                alpha -= window
-                beta = val + window
-                window *= 2
-            elif val >= beta:
-                beta += window
-                alpha = val - window
-                window *= 2
-            else:
-                best_move, score = move, val
+    if workers <= 1:
+        for d in range(1, depth + 1):
+            for k in list(_CAPTURE_HISTORY.keys()):
+                _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
+            _NODE_LIMIT = node_limit
+            alpha = score - window
+            beta = score + window
+            while True:
+                move, val = _search_root(board, d, alpha, beta)
+                if val <= alpha:
+                    alpha -= window
+                    beta = val + window
+                    window *= 2
+                elif val >= beta:
+                    beta += window
+                    alpha = val - window
+                    window *= 2
+                else:
+                    best_move, score = move, val
+                    break
+            if _NODE_LIMIT is not None and _NODE_LIMIT <= 0:
                 break
-        if _NODE_LIMIT is not None and _NODE_LIMIT <= 0:
-            break
-    _NODE_LIMIT = None
+        _NODE_LIMIT = None
+        return best_move
+
+    # Parallel search of root moves without iterative deepening
+    moves = board.generate_moves()
+    with mp.Pool(processes=workers) as pool:
+        results = pool.map(_search_move_mp, [(board, m, depth) for m in moves])
+    if not results:
+        return None
+    best_move, score = max(results, key=lambda x: x[1])
     return best_move

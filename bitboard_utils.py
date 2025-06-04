@@ -1,14 +1,26 @@
 import chess
+try:
+    from numba import njit
+except Exception:
+    def njit(func=None, **kwargs):
+        if func is None:
+            return lambda f: f
+        return func
 
 # Attack map caches keyed by piece square and occupancy bitboard
 _ROOK_CACHE: dict[tuple[int, int], int] = {}
 _BISHOP_CACHE: dict[tuple[int, int], int] = {}
 
-# Fast population count using Python 3.8+ int.bit_count()
+# Fast population count optionally accelerated with Numba
 
+@njit
 def popcount(bb: int) -> int:
     """Return the number of set bits in a bitboard."""
-    return bb.bit_count()
+    count = 0
+    while bb:
+        bb &= bb - 1
+        count += 1
+    return count
 
 # Pre-computed pawn move and capture tables
 WHITE_PAWN_MOVES = [0] * 64
