@@ -149,7 +149,7 @@ TROPISM_WEIGHTS = {
 # Bonus/penalty for pawn shield and king safety
 PAWN_SHIELD_BONUS = 30
 ATTACKER_PENALTY = 40
-EXPOSED_KING_PENALTY = 50
+EXPOSED_KING_PENALTY = 30
 OPEN_FILE_PENALTY = 15
 
 # Pawn structure heuristics
@@ -181,6 +181,7 @@ AGGRESSION_BONUS = 120_000
 MOBILITY_PROXIMITY_SCALE = 1.0
 REPETITION_PENALTY = 20
 MATE_THREAT_BONUS = 400
+CASTLING_BONUS = 50
 
 
 def evaluate(board: Board, ply: int = 0) -> int:
@@ -197,6 +198,11 @@ def evaluate(board: Board, ply: int = 0) -> int:
     piece_map = board._board.piece_map()
     white_king = board._board.king(chess.WHITE)
     black_king = board._board.king(chess.BLACK)
+    castling_score = 0
+    if white_king in (chess.G1, chess.C1):
+        castling_score += CASTLING_BONUS
+    if black_king in (chess.G8, chess.C8):
+        castling_score -= CASTLING_BONUS
 
     for square, piece in piece_map.items():
         color = 1 if piece.color == chess.WHITE else -1
@@ -229,6 +235,12 @@ def evaluate(board: Board, ply: int = 0) -> int:
             sq = king_sq + direction + df
             if 0 <= sq < 64:
                 p = piece_map.get(sq)
+                if p and p.color == color and p.piece_type == chess.PAWN:
+                    shield += 1
+                    continue
+            sq2 = king_sq + 2 * direction + df
+            if 0 <= sq2 < 64:
+                p = piece_map.get(sq2)
                 if p and p.color == color and p.piece_type == chess.PAWN:
                     shield += 1
         return shield
@@ -404,7 +416,7 @@ def evaluate(board: Board, ply: int = 0) -> int:
             mate_threat = MATE_THREAT_BONUS
 
     sign = 1 if board.turn == "w" else -1
-    return (base + mobility_score + pawn_shield + attacker_score +
+    return (base + mobility_score + pawn_shield + castling_score + attacker_score +
             tropism_score + pawn_struct_score + bishop_pair_score + rook_score +
             space_score + pawn_storm_score + tempo + initiative + mate_threat -
             sign * repetition)
