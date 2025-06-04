@@ -77,3 +77,15 @@ class Board:
 
     def is_game_over(self) -> bool:
         return self._board.is_game_over()
+
+    def is_check(self) -> bool:
+        """Return True if the side to move is in check."""
+        return self._board.is_check()
+
+    def push_null(self) -> None:
+        """Make a null move (pass the turn)."""
+        self._board.push(chess.Move.null())
+
+    def pop(self) -> None:
+        """Undo the last move."""
+        self._board.pop()
