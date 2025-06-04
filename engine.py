@@ -3,6 +3,20 @@ import chess
 from board import Board, Move, _piece_type_from_letter
 from bitboard_utils import popcount
 
+# Cache for attack maps keyed by occupancy bitboard
+_ATTACK_CACHE: dict[int, dict[int, int]] = {}
+
+
+def _get_attacks(board: Board, square: int) -> int:
+    """Return cached attack mask for a square."""
+    occ = int(board._board.occupied)
+    cache = _ATTACK_CACHE.setdefault(occ, {})
+    att = cache.get(square)
+    if att is None:
+        att = board._board.attacks_mask(square)
+        cache[square] = att
+    return att
+
 # Kaufman piece values used for the material imbalance evaluation
 PIECE_VALUES = {
     chess.PAWN: 100,
@@ -176,7 +190,8 @@ def evaluate(board: Board, ply: int = 0) -> int:
         material_score += color * PIECE_VALUES[pt]
         phase += PIECE_PHASE[pt]
 
-        mobility_score += color * MOBILITY_WEIGHTS[pt] * len(board._board.attacks(square))
+        attacks = _get_attacks(board, square)
+        mobility_score += color * MOBILITY_WEIGHTS[pt] * popcount(attacks)
 
         enemy_king = black_king if piece.color == chess.WHITE else white_king
         if enemy_king is not None:
@@ -390,10 +405,14 @@ def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
         alpha = stand_pat
 
     moves = []
+    append = moves.append
+    b = board._board
     for m in board.generate_moves():
-        cm = _to_chess_move(m)
-        if board._board.is_capture(cm) or board._board.gives_check(cm):
-            moves.append(m)
+        cm = chess.Move(m.from_square, m.to_square,
+                        promotion=_piece_type_from_letter(m.promotion)
+                        if m.promotion else None)
+        if b.is_capture(cm) or b.gives_check(cm):
+            append(m)
 
     _order_moves(board, moves, None, ply, None)
 

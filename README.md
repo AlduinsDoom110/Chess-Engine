@@ -35,6 +35,10 @@ improvements.
 * Simple sliding attack generators.
 * Zobrist hash updated after every move.
 * Engine searches at a fixed depth of 5 plies.
+* ``perft`` validation routines relying on ``python-chess``.
+* Rotated bitboards with caching for rook and bishop rays.
+* Pseudo-legal move generation with lazy legality checks.
+* Basic attack map cache keyed by occupancy.
 
 This repository contains a small Python chess engine built on top of the
 [`python-chess`](https://python-chess.readthedocs.io/) library.  It supports all
@@ -67,3 +71,12 @@ python3 uci.py
 ```
 
 Only a subset of the protocol is supported (e.g. `position` and `go depth N`).
+
+### Running perft
+
+The `perft.py` module provides a simple perft implementation using
+`python-chess`. It can be used to validate the engine's move generator:
+
+```bash
+python3 -c "import perft, board; print(perft.perft(board.Board(), 3))"
+```
