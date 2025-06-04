@@ -6,6 +6,9 @@ import sys
 from board import Board, Move, InvalidMoveError
 from engine import find_best_move
 
+THREADS = 1
+MULTIPV = 1
+
 
 def _square_from_str(square: str) -> int:
     if len(square) != 2:
@@ -52,7 +55,20 @@ def main() -> None:
         elif line == "isready":
             print("readyok")
         elif line.startswith("setoption"):
-            # No options supported in this simple engine
+            tokens = line.split()
+            if len(tokens) >= 5 and tokens[1] == "name" and tokens[3] == "value":
+                name = tokens[2].lower()
+                value = tokens[4]
+                if name == "threads":
+                    try:
+                        globals()["THREADS"] = max(1, int(value))
+                    except ValueError:
+                        pass
+                elif name == "multipv":
+                    try:
+                        globals()["MULTIPV"] = max(1, int(value))
+                    except ValueError:
+                        pass
             continue
         elif line == "ucinewgame":
             board = Board()
@@ -79,7 +95,22 @@ def main() -> None:
                         pass
                     idx += 1
         elif line.startswith("go"):
-            best = find_best_move(board, 5)
+            tokens = line.split()
+            depth = 5
+            if len(tokens) >= 3 and tokens[1] == "depth":
+                try:
+                    depth = int(tokens[2])
+                except ValueError:
+                    depth = 5
+
+            result = find_best_move(board, depth, threads=THREADS, multipv=MULTIPV)
+            if isinstance(result, list):
+                for idx, m in enumerate(result, 1):
+                    print(f"info multipv {idx} pv {_move_to_uci(m)}")
+                best = result[0] if result else None
+            else:
+                best = result
+
             if best is None:
                 print("bestmove 0000")
             else:

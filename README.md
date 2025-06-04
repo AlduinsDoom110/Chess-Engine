@@ -72,6 +72,20 @@ python3 uci.py
 
 Only a subset of the protocol is supported (e.g. `position` and `go depth N`).
 
+### Threading and Multi-PV
+
+`uci.py` now supports the standard `Threads` and `MultiPV` options. Set them
+with the UCI `setoption` command to control how many worker threads are used for
+search and how many principal variations are reported:
+
+```text
+setoption name Threads value 4
+setoption name MultiPV value 3
+```
+
+The `go` command will then return the best move as usual while also printing
+additional `info multipv` lines for the requested number of variations.
+
 ### Running perft
 
 The `perft.py` module provides a simple perft implementation using
