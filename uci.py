@@ -39,7 +39,6 @@ def _move_to_uci(move: Move) -> str:
 
 def main() -> None:
     board = Board()
-    depth = 2
 
     while True:
         line = sys.stdin.readline()
@@ -80,15 +79,7 @@ def main() -> None:
                         pass
                     idx += 1
         elif line.startswith("go"):
-            tokens = line.split()
-            if "depth" in tokens:
-                d_idx = tokens.index("depth")
-                if d_idx + 1 < len(tokens):
-                    try:
-                        depth = int(tokens[d_idx + 1])
-                    except ValueError:
-                        depth = 2
-            best = find_best_move(board, depth)
+            best = find_best_move(board, 5)
             if best is None:
                 print("bestmove 0000")
             else:

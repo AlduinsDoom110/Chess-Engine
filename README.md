@@ -28,6 +28,14 @@ python3 main.py
 The code is intended as a starting point for further experiments and
 improvements.
 
+### Recent additions
+
+* Bitboard utility module with fast ``int.bit_count()`` popcount.
+* Precomputed pawn move and capture tables.
+* Simple sliding attack generators.
+* Zobrist hash updated after every move.
+* Engine searches at a fixed depth of 5 plies.
+
 This repository contains a small Python chess engine built on top of the
 [`python-chess`](https://python-chess.readthedocs.io/) library.  It supports all
 conventional chess rules and uses a simple minimax search with alpha‑beta

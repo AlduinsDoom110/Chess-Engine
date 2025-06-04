@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional
 import chess
+from chess.polyglot import zobrist_hash
 
 class InvalidMoveError(Exception):
     """Raised when an illegal move is attempted."""
@@ -37,6 +38,7 @@ class Board:
             self._board = chess.Board() if fen == "startpos" else chess.Board(fen)
         except ValueError as exc:
             raise ValueError(f"Invalid FEN string: {fen}") from exc
+        self._hash = zobrist_hash(self._board)
 
     @property
     def turn(self) -> str:
@@ -51,9 +53,15 @@ class Board:
     def get_fen(self) -> str:
         return self._board.fen()
 
+    @property
+    def hash(self) -> int:
+        """Return the Zobrist hash of the position."""
+        return self._hash
+
     def copy(self) -> 'Board':
         new_board = Board()
         new_board._board = self._board.copy()
+        new_board._hash = self._hash
         return new_board
 
     def generate_moves(self) -> List[Move]:
@@ -74,6 +82,7 @@ class Board:
         if m not in self._board.legal_moves:
             raise InvalidMoveError(f"Illegal move: {m.uci()}")
         self._board.push(m)
+        self._hash = zobrist_hash(self._board)
 
     def is_game_over(self) -> bool:
         return self._board.is_game_over()
@@ -85,7 +94,9 @@ class Board:
     def push_null(self) -> None:
         """Make a null move (pass the turn)."""
         self._board.push(chess.Move.null())
+        self._hash = zobrist_hash(self._board)
 
     def pop(self) -> None:
         """Undo the last move."""
         self._board.pop()
+        self._hash = zobrist_hash(self._board)

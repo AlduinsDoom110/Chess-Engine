@@ -24,7 +24,6 @@ def move_to_str(move_from: int, move_to: int) -> str:
 
 def main() -> None:
     board = Board()
-    depth = 2
     while True:
         print(board.get_fen())
         if board.turn == 'w':
@@ -40,7 +39,7 @@ def main() -> None:
                 print(f'Invalid move: {e}')
                 continue
         else:
-            best = find_best_move(board, depth)
+            best = find_best_move(board, 5)
             if best is None:
                 print('No moves available.')
                 break
