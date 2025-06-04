@@ -145,8 +145,10 @@ TROPISM_WEIGHTS = {
 }
 
 # Bonus/penalty for pawn shield and king safety
-PAWN_SHIELD_BONUS = 10
-ATTACKER_PENALTY = 20
+PAWN_SHIELD_BONUS = 30
+ATTACKER_PENALTY = 40
+EXPOSED_KING_PENALTY = 50
+OPEN_FILE_PENALTY = 15
 
 # Pawn structure heuristics
 ISOLATED_PAWN_PENALTY = 15
@@ -216,6 +218,26 @@ def evaluate(board: Board, ply: int = 0) -> int:
 
     pawn_shield += PAWN_SHIELD_BONUS * _pawn_shield_for(chess.WHITE)
     pawn_shield -= PAWN_SHIELD_BONUS * _pawn_shield_for(chess.BLACK)
+
+    def _exposure_penalty(color: chess.Color) -> int:
+        king_sq = white_king if color == chess.WHITE else black_king
+        if king_sq is None:
+            return 0
+        penalty = EXPOSED_KING_PENALTY * max(0, 3 - _pawn_shield_for(color))
+        file = chess.square_file(king_sq)
+        friendly_pawns_bb = int(board._board.pieces(chess.PAWN, color))
+        enemy_pawns_bb = int(board._board.pieces(chess.PAWN, not color))
+        for df in (-1, 0, 1):
+            f = file + df
+            if 0 <= f <= 7:
+                friendly = friendly_pawns_bb & chess.BB_FILES[f]
+                if not friendly:
+                    enemy = enemy_pawns_bb & chess.BB_FILES[f]
+                    penalty += OPEN_FILE_PENALTY * (2 if not enemy else 1)
+        return penalty
+
+    pawn_shield -= _exposure_penalty(chess.BLACK)
+    pawn_shield += _exposure_penalty(chess.WHITE)
 
     def _attackers_around(king_sq: int, color: chess.Color) -> int:
         if king_sq is None:
@@ -333,8 +355,8 @@ def evaluate(board: Board, ply: int = 0) -> int:
 
 # --- Search ---------------------------------------------------------------
 
-INFINITY = 10_000_000
-MATE_VALUE = INFINITY - 1000
+INFINITY = 100_000
+MATE_VALUE = 10_000
 
 
 class _TTEntry:
@@ -384,6 +406,10 @@ def _tt_set(key, value) -> None:
 
 
 def _eval_for_side(board: Board, ply: int) -> int:
+    if board._board.is_checkmate():
+        return -MATE_VALUE + ply
+    if board._board.is_stalemate():
+        return 0
     val = evaluate(board, ply)
     return val if board.turn == "w" else -val
 
@@ -420,6 +446,21 @@ def _see(board: Board, move: Move) -> int:
     captured_value = PIECE_VALUES.get(captured.piece_type, 0) if captured else 0
 
     return captured_value - attacker_value
+
+
+def _threatens_mate(board: Board) -> bool:
+    """Return True if the side to move can mate on the next move with a null reply."""
+    null_board = board.copy()
+    null_board.push_null()
+    for m in null_board.generate_moves():
+        child = null_board.copy()
+        try:
+            child.push(m)
+        except InvalidMoveError:
+            continue
+        if child._board.is_checkmate():
+            return True
+    return False
 
 
 def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
@@ -578,7 +619,11 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
             continue
         cm = _to_chess_move(m)
         capture = board._board.is_capture(cm)
+        give_check = board._board.gives_check(cm)
+        threat = _threatens_mate(child)
         ext = 1 if singular else 0
+        if give_check or threat:
+            ext += 1
 
         if i == 0:
             score = -_negamax(child, depth - 1 + ext, -beta, -alpha, ply + 1, m)
