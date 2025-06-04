@@ -175,6 +175,11 @@ PAWN_STORM_BONUS = 10
 MATERIAL_TAPER_RATIO = 10  # percent reduction per missing pawn in shield
 AGGRESSION_BONUS = 120_000
 
+# New evaluation constants
+MOBILITY_PROXIMITY_SCALE = 1.0
+REPETITION_PENALTY = 20
+MATE_THREAT_BONUS = 400
+
 
 def evaluate(board: Board, ply: int = 0) -> int:
     mg_score = 0
@@ -204,12 +209,13 @@ def evaluate(board: Board, ply: int = 0) -> int:
         phase += PIECE_PHASE[pt]
 
         attacks = _get_attacks(board, square)
-        mobility_score += color * MOBILITY_WEIGHTS[pt] * popcount(attacks)
-
         enemy_king = black_king if piece.color == chess.WHITE else white_king
+        prox_factor = 1.0
         if enemy_king is not None:
             dist = chess.square_distance(square, enemy_king)
+            prox_factor += MOBILITY_PROXIMITY_SCALE * (7 - dist) / 7
             tropism_score += color * TROPISM_WEIGHTS[pt] * (7 - dist)
+        mobility_score += color * MOBILITY_WEIGHTS[pt] * popcount(attacks) * prox_factor
 
     def _pawn_shield_for(color: chess.Color) -> int:
         king_sq = white_king if color == chess.WHITE else black_king
@@ -373,9 +379,33 @@ def evaluate(board: Board, ply: int = 0) -> int:
         tempo = TEMPO_BONUS if board.turn == "w" else -TEMPO_BONUS
         initiative = (mobility_score * INITIATIVE_FACTOR) // 4
 
+    repetition = 0
+    if board._board.can_claim_threefold_repetition():
+        repetition = 2 * REPETITION_PENALTY
+    elif board._board.is_repetition(2):
+        repetition = REPETITION_PENALTY
+
+    mate_threat = 0
+    if ply <= 1:
+        count = 0
+        for m in board.generate_moves():
+            child = board.copy()
+            try:
+                child.push(m)
+            except InvalidMoveError:
+                continue
+            if child._board.is_checkmate():
+                count += 1
+                if count >= 2:
+                    break
+        if count >= 2:
+            mate_threat = MATE_THREAT_BONUS
+
+    sign = 1 if board.turn == "w" else -1
     return (base + mobility_score + pawn_shield + attacker_score +
             tropism_score + pawn_struct_score + bishop_pair_score + rook_score +
-            space_score + pawn_storm_score + tempo + initiative)
+            space_score + pawn_storm_score + tempo + initiative + mate_threat -
+            sign * repetition)
 
 
 # --- Search ---------------------------------------------------------------
@@ -434,6 +464,13 @@ def _eval_for_side(board: Board, ply: int) -> int:
     if board._board.is_checkmate():
         return -MATE_VALUE + ply
     if board._board.is_stalemate():
+        material = 0
+        for piece in board._board.piece_map().values():
+            val = PIECE_VALUES[piece.piece_type]
+            material += val if piece.color == chess.WHITE else -val
+        score = material if board.turn == "w" else -material
+        if score > 0:
+            return -MATE_VALUE
         return 0
     val = evaluate(board, ply)
     return val if board.turn == "w" else -val
@@ -686,7 +723,11 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         if i == 0:
             score = -_negamax(child, depth - 1 + ext, -beta, -alpha, ply + 1, m)
         else:
-            reduction = 1 if depth >= 3 and i >= 3 and not capture else 0
+            enemy_king_sq = board._board.king(not board._board.turn)
+            before_dist = chess.square_distance(m.from_square, enemy_king_sq) if enemy_king_sq is not None else 7
+            after_dist = chess.square_distance(m.to_square, enemy_king_sq) if enemy_king_sq is not None else 7
+            converges = enemy_king_sq is not None and after_dist < before_dist
+            reduction = 1 if depth >= 3 and i >= 3 and not capture and not give_check and not converges else 0
             score = -_negamax(child, depth - 1 - reduction + ext, -alpha - 1,
                               -alpha, ply + 1, m)
             if score > alpha and reduction:
