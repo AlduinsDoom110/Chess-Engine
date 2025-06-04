@@ -65,13 +65,15 @@ class Board:
         return new_board
 
     def generate_moves(self) -> List[Move]:
+        """Return pseudo-legal moves. Legality is checked lazily on push."""
         moves: List[Move] = []
-        for m in self._board.legal_moves:
+        append = moves.append  # Local variable for speed
+        for m in self._board.generate_pseudo_legal_moves():
             promo = None
             if m.promotion:
                 letter = chess.piece_symbol(m.promotion)
                 promo = letter.upper() if self._board.turn == chess.WHITE else letter
-            moves.append(Move(m.from_square, m.to_square, promo))
+            append(Move(m.from_square, m.to_square, promo))
         return moves
 
     def push(self, move: Move) -> None:
