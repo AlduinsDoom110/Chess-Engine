@@ -130,6 +130,21 @@ TROPISM_WEIGHTS = {
 PAWN_SHIELD_BONUS = 10
 ATTACKER_PENALTY = 20
 
+# Pawn structure heuristics
+ISOLATED_PAWN_PENALTY = 15
+DOUBLED_PAWN_PENALTY = 10
+BACKWARD_PAWN_PENALTY = 8
+PASSED_PAWN_BONUS = 20
+
+# Bishop pair scaling
+BISHOP_PAIR_BONUS = 30
+BISHOP_PAIR_SCALE = 2
+
+# Rook bonuses
+ROOK_OPEN_FILE_BONUS = 20
+ROOK_SEMI_OPEN_FILE_BONUS = 10
+ROOK_SEVENTH_BONUS = 20
+
 
 def evaluate(board: Board) -> int:
     mg_score = 0
@@ -187,9 +202,91 @@ def evaluate(board: Board) -> int:
     attacker_score -= ATTACKER_PENALTY * _attackers_around(white_king, chess.WHITE)
     attacker_score += ATTACKER_PENALTY * _attackers_around(black_king, chess.BLACK)
 
+    pawn_struct_score = 0
+    bishop_pair_score = 0
+    rook_score = 0
+
+    total_pawns = len(board._board.pieces(chess.PAWN, chess.WHITE)) + len(board._board.pieces(chess.PAWN, chess.BLACK))
+
+    for color in [chess.WHITE, chess.BLACK]:
+        sign = 1 if color == chess.WHITE else -1
+        pawns = list(board._board.pieces(chess.PAWN, color))
+        enemy_color = not color
+        enemy_pawns = list(board._board.pieces(chess.PAWN, enemy_color))
+        pawns_bb = board._board.pieces(chess.PAWN, color)
+        enemy_pawns_bb = board._board.pieces(chess.PAWN, enemy_color)
+
+        # Bishop pair bonus scaled by openness
+        if len(board._board.pieces(chess.BISHOP, color)) >= 2:
+            openness = 16 - total_pawns
+            bishop_pair_score += sign * (BISHOP_PAIR_BONUS + openness * BISHOP_PAIR_SCALE)
+
+        # Pawn structure heuristics
+        for sq in pawns:
+            file = chess.square_file(sq)
+            rank = chess.square_rank(sq)
+
+            # Doubled pawns
+            if chess.popcount(pawns_bb & chess.BB_FILES[file]) > 1:
+                pawn_struct_score -= sign * DOUBLED_PAWN_PENALTY
+
+            # Isolated pawns
+            adjacent = 0
+            if file > 0:
+                adjacent |= pawns_bb & chess.BB_FILES[file - 1]
+            if file < 7:
+                adjacent |= pawns_bb & chess.BB_FILES[file + 1]
+            if not adjacent:
+                pawn_struct_score -= sign * ISOLATED_PAWN_PENALTY
+
+            # Backward pawns (simple version)
+            direction = 8 if color == chess.WHITE else -8
+            front = sq + direction
+            blocked = not (0 <= front < 64 and board._board.piece_at(front) is None)
+            support = False
+            for df in (-1, 1):
+                nf = file + df
+                if 0 <= nf <= 7:
+                    for adj_sq in chess.SquareSet(pawns_bb & chess.BB_FILES[nf]):
+                        if (color == chess.WHITE and adj_sq > sq) or (color == chess.BLACK and adj_sq < sq):
+                            support = True
+                            break
+                if support:
+                    break
+            if blocked and not support:
+                pawn_struct_score -= sign * BACKWARD_PAWN_PENALTY
+
+            # Passed pawns
+            passed = True
+            for ep in enemy_pawns:
+                ef = chess.square_file(ep)
+                er = chess.square_rank(ep)
+                if ef in {file - 1, file, file + 1}:
+                    if (color == chess.WHITE and er > rank) or (color == chess.BLACK and er < rank):
+                        passed = False
+                        break
+            if passed:
+                pawn_struct_score += sign * PASSED_PAWN_BONUS
+
+        # Rook bonuses
+        for sq in board._board.pieces(chess.ROOK, color):
+            file = chess.square_file(sq)
+            rank = chess.square_rank(sq)
+            friendly_file = pawns_bb & chess.BB_FILES[file]
+            enemy_file = enemy_pawns_bb & chess.BB_FILES[file]
+            if not friendly_file:
+                if not enemy_file:
+                    rook_score += sign * ROOK_OPEN_FILE_BONUS
+                else:
+                    rook_score += sign * ROOK_SEMI_OPEN_FILE_BONUS
+
+            if (color == chess.WHITE and rank == 6) or (color == chess.BLACK and rank == 1):
+                rook_score += sign * ROOK_SEVENTH_BONUS
+
     phase = min(phase, TOTAL_PHASE)
     base = (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
-    return base + mobility_score + pawn_shield + attacker_score + tropism_score
+    return (base + mobility_score + pawn_shield + attacker_score +
+            tropism_score + pawn_struct_score + bishop_pair_score + rook_score)
 
 
 def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
