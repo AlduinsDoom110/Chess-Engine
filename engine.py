@@ -457,6 +457,11 @@ _KILLERS = [[None, None] for _ in range(64)]
 _COUNTER: dict = {}
 _NODE_LIMIT: Optional[int] = None
 
+def _ensure_killers(ply: int) -> None:
+    """Ensure the killers table is long enough for the given ply."""
+    while ply >= len(_KILLERS):
+        _KILLERS.append([None, None])
+
 CHECK_EXTENSION_DEPTH = 8
 DELTA_MARGIN = 200
 
@@ -688,6 +693,7 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
                 board.pop()
             except InvalidMoveError:
                 pass
+        _ensure_killers(ply)
         km = _KILLERS[ply]
         if km[0] and m == km[0]:
             s += 900_000
@@ -827,6 +833,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
                     key_cap = (attacker.piece_type, target.piece_type)
                     _CAPTURE_HISTORY[key_cap] = _CAPTURE_HISTORY.get(key_cap, 0) + depth * depth
             else:
+                _ensure_killers(ply)
                 if _KILLERS[ply][0] != m:
                     _KILLERS[ply][1] = _KILLERS[ply][0]
                     _KILLERS[ply][0] = m
