@@ -1,6 +1,7 @@
 from typing import Optional, Union, List, Tuple
 import chess
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
@@ -348,6 +349,7 @@ class _TTEntry:
 
 # Transposition table and heuristics
 _TT: dict = {}
+_TT_LOCK: Optional[multiprocessing.Lock] = None
 _HISTORY: dict = {}
 _BUTTERFLY: dict = {}
 _CAPTURE_HISTORY: dict = {}
@@ -357,6 +359,28 @@ _NODE_LIMIT: Optional[int] = None
 
 CHECK_EXTENSION_DEPTH = 8
 DELTA_MARGIN = 200
+
+
+def _init_worker(shared_tt, lock) -> None:
+    """Initializer for worker processes to share the transposition table."""
+    global _TT, _TT_LOCK
+    _TT = shared_tt
+    _TT_LOCK = lock
+
+
+def _tt_get(key):
+    if _TT_LOCK:
+        with _TT_LOCK:
+            return _TT.get(key)
+    return _TT.get(key)
+
+
+def _tt_set(key, value) -> None:
+    if _TT_LOCK:
+        with _TT_LOCK:
+            _TT[key] = value
+    else:
+        _TT[key] = value
 
 
 def _eval_for_side(board: Board, ply: int) -> int:
@@ -488,7 +512,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         return _eval_for_side(board, ply)
 
     key = board._board._transposition_key()
-    entry: Optional[_TTEntry] = _TT.get(key)
+    entry: Optional[_TTEntry] = _tt_get(key)
     if entry and entry.depth >= depth:
         if entry.flag == 0:
             return entry.value
@@ -501,7 +525,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
 
     if entry is None and depth >= 3:
         _negamax(board, depth - 2, alpha, beta, ply, prev, allow_null)
-        entry = _TT.get(key)
+        entry = _tt_get(key)
 
     if depth <= 2 and not board.is_check():
         eval_static = _eval_for_side(board, ply)
@@ -582,7 +606,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
                 if prev:
                     _COUNTER[(prev.from_square, prev.to_square)] = m
                 _HISTORY[(m.from_square, m.to_square)] = _HISTORY.get((m.from_square, m.to_square), 0) + depth * depth
-            _TT[key] = _TTEntry(depth, beta, 1, m)
+            _tt_set(key, _TTEntry(depth, beta, 1, m))
             return beta
         if score > alpha:
             alpha = score
@@ -590,15 +614,15 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         if not capture:
             _BUTTERFLY[(m.from_square, m.to_square)] = _BUTTERFLY.get((m.from_square, m.to_square), 0) + 1
     if best_move is None:
-        _TT[key] = _TTEntry(depth, alpha, 2, None)
+        _tt_set(key, _TTEntry(depth, alpha, 2, None))
     else:
-        _TT[key] = _TTEntry(depth, alpha, 0, best_move)
+        _tt_set(key, _TTEntry(depth, alpha, 0, best_move))
     return alpha
 
 
 def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optional[Move], int]:
     key = board._board._transposition_key()
-    entry = _TT.get(key)
+    entry = _tt_get(key)
     tt_move = entry.move if entry else None
     moves = board.generate_moves()
     _order_moves(board, moves, tt_move, 0, None)
@@ -624,7 +648,7 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
         if alpha >= beta:
             break
     if best_move:
-        _TT[key] = _TTEntry(depth, alpha, 0, best_move)
+        _tt_set(key, _TTEntry(depth, alpha, 0, best_move))
     return best_move, alpha
 
 
@@ -663,7 +687,7 @@ def find_best_move(
         If greater than 1, return the top ``multipv`` moves.
     """
 
-    global _NODE_LIMIT
+    global _NODE_LIMIT, _TT, _TT_LOCK
     best_move: Optional[Move] = None
     score = 0
     window = 50
@@ -696,10 +720,19 @@ def find_best_move(
     moves = board.generate_moves()
     results: List[Tuple[Move, int]] = []
     if threads <= 1:
+        _TT = {}
+        _TT_LOCK = None
         for m in moves:
             results.append(_search_move_thread((board, m, depth)))
     else:
-        with ProcessPoolExecutor(max_workers=threads) as pool:
+        manager = multiprocessing.Manager()
+        shared_tt = manager.dict()
+        lock = manager.Lock()
+        _TT = shared_tt
+        _TT_LOCK = lock
+        with ProcessPoolExecutor(max_workers=threads,
+                                initializer=_init_worker,
+                                initargs=(shared_tt, lock)) as pool:
             futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
             for f in futs:
                 results.append(f.result())
