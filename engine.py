@@ -170,11 +170,17 @@ SPACE_PAWN_BONUS = 6
 TEMPO_BONUS = 10
 INITIATIVE_FACTOR = 2
 
+# Extra evaluation tweaks
+PAWN_STORM_BONUS = 10
+MATERIAL_TAPER_RATIO = 10  # percent reduction per missing pawn in shield
+AGGRESSION_BONUS = 120_000
+
 
 def evaluate(board: Board, ply: int = 0) -> int:
     mg_score = 0
     eg_score = 0
-    material_score = 0
+    white_material = 0
+    black_material = 0
     phase = 0
     mobility_score = 0
     tropism_score = 0
@@ -191,7 +197,10 @@ def evaluate(board: Board, ply: int = 0) -> int:
         idx = square if piece.color == chess.WHITE else chess.square_mirror(square)
         mg_score += color * MG_PST[pt][idx]
         eg_score += color * EG_PST[pt][idx]
-        material_score += color * PIECE_VALUES[pt]
+        if piece.color == chess.WHITE:
+            white_material += PIECE_VALUES[pt]
+        else:
+            black_material += PIECE_VALUES[pt]
         phase += PIECE_PHASE[pt]
 
         attacks = _get_attacks(board, square)
@@ -216,8 +225,10 @@ def evaluate(board: Board, ply: int = 0) -> int:
                     shield += 1
         return shield
 
-    pawn_shield += PAWN_SHIELD_BONUS * _pawn_shield_for(chess.WHITE)
-    pawn_shield -= PAWN_SHIELD_BONUS * _pawn_shield_for(chess.BLACK)
+    white_shield_count = _pawn_shield_for(chess.WHITE)
+    black_shield_count = _pawn_shield_for(chess.BLACK)
+    pawn_shield += PAWN_SHIELD_BONUS * white_shield_count
+    pawn_shield -= PAWN_SHIELD_BONUS * black_shield_count
 
     def _exposure_penalty(color: chess.Color) -> int:
         king_sq = white_king if color == chess.WHITE else black_king
@@ -254,6 +265,7 @@ def evaluate(board: Board, ply: int = 0) -> int:
     bishop_pair_score = 0
     rook_score = 0
     space_score = 0
+    pawn_storm_score = 0
 
     total_pawns = len(board._board.pieces(chess.PAWN, chess.WHITE)) + len(board._board.pieces(chess.PAWN, chess.BLACK))
 
@@ -267,10 +279,19 @@ def evaluate(board: Board, ply: int = 0) -> int:
 
         # Count space by advanced pawns beyond the 4th rank
         if color == chess.WHITE:
-            advanced = sum(1 for sq in pawns if chess.square_rank(sq) >= 4)
+            advanced = [sq for sq in pawns if chess.square_rank(sq) >= 4]
         else:
-            advanced = sum(1 for sq in pawns if chess.square_rank(sq) <= 3)
-        space_score += sign * SPACE_PAWN_BONUS * advanced
+            advanced = [sq for sq in pawns if chess.square_rank(sq) <= 3]
+        space_score += sign * SPACE_PAWN_BONUS * len(advanced)
+
+        enemy_king_sq = black_king if color == chess.WHITE else white_king
+        king_sq = white_king if color == chess.WHITE else black_king
+        shield_count = white_shield_count if color == chess.WHITE else black_shield_count
+        if king_sq is not None and enemy_king_sq is not None and shield_count >= 2:
+            ef = chess.square_file(enemy_king_sq)
+            for sq in advanced:
+                if abs(chess.square_file(sq) - ef) <= 1:
+                    pawn_storm_score += sign * PAWN_STORM_BONUS
 
         # Bishop pair bonus scaled by openness
         if len(board._board.pieces(chess.BISHOP, color)) >= 2:
@@ -339,6 +360,10 @@ def evaluate(board: Board, ply: int = 0) -> int:
             if (color == chess.WHITE and rank == 6) or (color == chess.BLACK and rank == 1):
                 rook_score += sign * ROOK_SEVENTH_BONUS
 
+    white_scale = 100 - MATERIAL_TAPER_RATIO * max(0, 3 - white_shield_count)
+    black_scale = 100 - MATERIAL_TAPER_RATIO * max(0, 3 - black_shield_count)
+    material_score = (white_material * white_scale // 100) - (black_material * black_scale // 100)
+
     phase = min(phase, TOTAL_PHASE)
     base = material_score + (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
 
@@ -350,7 +375,7 @@ def evaluate(board: Board, ply: int = 0) -> int:
 
     return (base + mobility_score + pawn_shield + attacker_score +
             tropism_score + pawn_struct_score + bishop_pair_score + rook_score +
-            space_score + tempo + initiative)
+            space_score + pawn_storm_score + tempo + initiative)
 
 
 # --- Search ---------------------------------------------------------------
@@ -463,6 +488,27 @@ def _threatens_mate(board: Board) -> bool:
     return False
 
 
+def _mate_in_two(board: Board) -> bool:
+    """Return True if the side to move can mate in at most two moves."""
+    for m1 in board.generate_moves():
+        b1 = board.copy()
+        try:
+            b1.push(m1)
+        except InvalidMoveError:
+            continue
+        if b1._board.is_checkmate():
+            return True
+        for m2 in b1.generate_moves():
+            b2 = b1.copy()
+            try:
+                b2.push(m2)
+            except InvalidMoveError:
+                continue
+            if b2._board.is_checkmate():
+                return True
+    return False
+
+
 def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
     stand_pat = _eval_for_side(board, ply)
     if stand_pat >= beta:
@@ -515,8 +561,18 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
             target = board._board.piece_at(cm.to_square)
             if attacker and target:
                 s += _CAPTURE_HISTORY.get((attacker.piece_type, target.piece_type), 0)
+            if attacker and attacker.piece_type == chess.QUEEN and _see(board, m) < 0:
+                s += AGGRESSION_BONUS
         elif board._board.gives_check(cm):
-            s += 90_000
+            s += 90_000 + AGGRESSION_BONUS // 2
+            child = board.copy()
+            try:
+                child.push(m)
+            except InvalidMoveError:
+                pass
+            else:
+                if child._board.is_checkmate():
+                    s += 2_000_000
         km = _KILLERS[ply]
         if km[0] and m == km[0]:
             s += 900_000
@@ -621,6 +677,8 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         capture = board._board.is_capture(cm)
         give_check = board._board.gives_check(cm)
         threat = _threatens_mate(child)
+        if capture and _see(board, m) > 0 and _mate_in_two(child):
+            continue
         ext = 1 if singular else 0
         if give_check or threat:
             ext += 1
