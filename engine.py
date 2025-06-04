@@ -2,6 +2,7 @@ from typing import Optional
 import chess
 from board import Board, Move
 
+# Kaufman piece values used for the material imbalance evaluation
 PIECE_VALUES = {
     chess.PAWN: 100,
     chess.KNIGHT: 320,
@@ -145,10 +146,16 @@ ROOK_OPEN_FILE_BONUS = 20
 ROOK_SEMI_OPEN_FILE_BONUS = 10
 ROOK_SEVENTH_BONUS = 20
 
+# Additional evaluation constants
+SPACE_PAWN_BONUS = 6
+TEMPO_BONUS = 10
+INITIATIVE_FACTOR = 2
 
-def evaluate(board: Board) -> int:
+
+def evaluate(board: Board, ply: int = 0) -> int:
     mg_score = 0
     eg_score = 0
+    material_score = 0
     phase = 0
     mobility_score = 0
     tropism_score = 0
@@ -163,8 +170,9 @@ def evaluate(board: Board) -> int:
         color = 1 if piece.color == chess.WHITE else -1
         pt = piece.piece_type
         idx = square if piece.color == chess.WHITE else chess.square_mirror(square)
-        mg_score += color * (PIECE_VALUES[pt] + MG_PST[pt][idx])
-        eg_score += color * (PIECE_VALUES[pt] + EG_PST[pt][idx])
+        mg_score += color * MG_PST[pt][idx]
+        eg_score += color * EG_PST[pt][idx]
+        material_score += color * PIECE_VALUES[pt]
         phase += PIECE_PHASE[pt]
 
         mobility_score += color * MOBILITY_WEIGHTS[pt] * len(board._board.attacks(square))
@@ -205,6 +213,7 @@ def evaluate(board: Board) -> int:
     pawn_struct_score = 0
     bishop_pair_score = 0
     rook_score = 0
+    space_score = 0
 
     total_pawns = len(board._board.pieces(chess.PAWN, chess.WHITE)) + len(board._board.pieces(chess.PAWN, chess.BLACK))
 
@@ -213,8 +222,15 @@ def evaluate(board: Board) -> int:
         pawns = list(board._board.pieces(chess.PAWN, color))
         enemy_color = not color
         enemy_pawns = list(board._board.pieces(chess.PAWN, enemy_color))
-        pawns_bb = board._board.pieces(chess.PAWN, color)
-        enemy_pawns_bb = board._board.pieces(chess.PAWN, enemy_color)
+        pawns_bb = int(board._board.pieces(chess.PAWN, color))
+        enemy_pawns_bb = int(board._board.pieces(chess.PAWN, enemy_color))
+
+        # Count space by advanced pawns beyond the 4th rank
+        if color == chess.WHITE:
+            advanced = sum(1 for sq in pawns if chess.square_rank(sq) >= 4)
+        else:
+            advanced = sum(1 for sq in pawns if chess.square_rank(sq) <= 3)
+        space_score += sign * SPACE_PAWN_BONUS * advanced
 
         # Bishop pair bonus scaled by openness
         if len(board._board.pieces(chess.BISHOP, color)) >= 2:
@@ -227,7 +243,7 @@ def evaluate(board: Board) -> int:
             rank = chess.square_rank(sq)
 
             # Doubled pawns
-            if chess.popcount(pawns_bb & chess.BB_FILES[file]) > 1:
+            if chess.popcount(int(pawns_bb & chess.BB_FILES[file])) > 1:
                 pawn_struct_score -= sign * DOUBLED_PAWN_PENALTY
 
             # Isolated pawns
@@ -284,14 +300,22 @@ def evaluate(board: Board) -> int:
                 rook_score += sign * ROOK_SEVENTH_BONUS
 
     phase = min(phase, TOTAL_PHASE)
-    base = (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
+    base = material_score + (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
+
+    tempo = 0
+    initiative = 0
+    if ply == 0:
+        tempo = TEMPO_BONUS if board.turn == "w" else -TEMPO_BONUS
+        initiative = (mobility_score * INITIATIVE_FACTOR) // 4
+
     return (base + mobility_score + pawn_shield + attacker_score +
-            tropism_score + pawn_struct_score + bishop_pair_score + rook_score)
+            tropism_score + pawn_struct_score + bishop_pair_score + rook_score +
+            space_score + tempo + initiative)
 
 
-def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
+def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool, ply: int = 0) -> int:
     if depth == 0 or board.is_game_over():
-        return evaluate(board)
+        return evaluate(board, ply)
 
     moves = board.generate_moves()
     if maximizing:
@@ -299,7 +323,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool) -
         for move in moves:
             new_board = board.copy()
             new_board.push(move)
-            value = max(value, minimax(new_board, depth - 1, alpha, beta, False))
+            value = max(value, minimax(new_board, depth - 1, alpha, beta, False, ply + 1))
             alpha = max(alpha, value)
             if alpha >= beta:
                 break
@@ -309,7 +333,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool) -
         for move in moves:
             new_board = board.copy()
             new_board.push(move)
-            value = min(value, minimax(new_board, depth - 1, alpha, beta, True))
+            value = min(value, minimax(new_board, depth - 1, alpha, beta, True, ply + 1))
             beta = min(beta, value)
             if beta <= alpha:
                 break
@@ -322,7 +346,7 @@ def find_best_move(board: Board, depth: int) -> Optional[Move]:
     for move in board.generate_moves():
         new_board = board.copy()
         new_board.push(move)
-        value = minimax(new_board, depth - 1, -float("inf"), float("inf"), board.turn != "w")
+        value = minimax(new_board, depth - 1, -float("inf"), float("inf"), board.turn != "w", 1)
         if board.turn == "w":
             if value > best_value:
                 best_value = value
