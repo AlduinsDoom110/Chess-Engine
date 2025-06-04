@@ -1,6 +1,6 @@
 from typing import Optional
 import chess
-from board import Board, Move
+from board import Board, Move, _piece_type_from_letter
 
 # Kaufman piece values used for the material imbalance evaluation
 PIECE_VALUES = {
@@ -358,7 +358,8 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
     moves.sort(key=score)
 
 
-def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int, prev: Optional[Move]) -> int:
+def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
+             prev: Optional[Move], allow_null: bool = True) -> int:
     if depth == 0 or board.is_game_over():
         return _eval_for_side(board, ply)
 
@@ -374,19 +375,62 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int, prev: Op
         if alpha >= beta:
             return entry.value
 
+    if entry is None and depth >= 3:
+        _negamax(board, depth - 2, alpha, beta, ply, prev, allow_null)
+        entry = _TT.get(key)
+
+    # Null move pruning with verification search
+    if allow_null and depth >= 3 and not board.is_check():
+        r = 2
+        null_board = board.copy()
+        null_board.push_null()
+        score = -_negamax(null_board, depth - 1 - r, -beta, -beta + 1, ply + 1,
+                          None, False)
+        if score >= beta:
+            verify = _negamax(board, depth - 1, alpha, beta, ply, prev, False)
+            if verify >= beta:
+                return beta
+
+    # Multi-cut pruning
+    if depth >= 6 and not board.is_check():
+        mc_moves = board.generate_moves()[:6]
+        cut = 0
+        for m in mc_moves:
+            child = board.copy()
+            child.push(m)
+            score = -_negamax(child, depth - 2, -beta, -beta + 1, ply + 1, m,
+                              False)
+            if score >= beta:
+                cut += 1
+                if cut >= 3:
+                    return beta
+
     moves = board.generate_moves()
     tt_move = entry.move if entry else None
     _order_moves(board, moves, tt_move, ply, prev)
 
     best_move: Optional[Move] = None
-    for m in moves:
+    for i, m in enumerate(moves):
         child = board.copy()
         child.push(m)
-        score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
+        chess_move = chess.Move(m.from_square, m.to_square,
+                               promotion=_piece_type_from_letter(m.promotion)
+                               if m.promotion else None)
+        capture = board._board.is_capture(chess_move)
+
+        if i == 0:
+            score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
+        else:
+            reduction = 1 if depth >= 3 and i >= 3 and not capture else 0
+            score = -_negamax(child, depth - 1 - reduction, -alpha - 1,
+                              -alpha, ply + 1, m)
+            if score > alpha and reduction:
+                score = -_negamax(child, depth - 1, -alpha - 1, -alpha, ply + 1,
+                                  m)
+            if score > alpha and score < beta:
+                score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
         if score >= beta:
-            chess_move = chess.Move(m.from_square, m.to_square,
-                                   promotion=_piece_type_from_letter(m.promotion) if m.promotion else None)
-            if not board._board.is_capture(chess_move):
+            if not capture:
                 if _KILLERS[ply][0] != m:
                     _KILLERS[ply][1] = _KILLERS[ply][0]
                     _KILLERS[ply][0] = m
@@ -413,10 +457,15 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     _order_moves(board, moves, tt_move, 0, None)
 
     best_move: Optional[Move] = None
-    for m in moves:
+    for i, m in enumerate(moves):
         child = board.copy()
         child.push(m)
-        score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
+        if i == 0:
+            score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
+        else:
+            score = -_negamax(child, depth - 1, -alpha - 1, -alpha, 1, m)
+            if score > alpha:
+                score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
         if score > alpha:
             alpha = score
             best_move = m
