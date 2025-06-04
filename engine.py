@@ -106,20 +106,90 @@ PIECE_PHASE = {
 }
 TOTAL_PHASE = 24
 
+# Mobility weights per piece type
+MOBILITY_WEIGHTS = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 4,
+    chess.BISHOP: 4,
+    chess.ROOK: 2,
+    chess.QUEEN: 1,
+    chess.KING: 0,
+}
+
+# Tropism weights for pieces closing in on the enemy king
+TROPISM_WEIGHTS = {
+    chess.PAWN: 2,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 2,
+    chess.QUEEN: 1,
+    chess.KING: 0,
+}
+
+# Bonus/penalty for pawn shield and king safety
+PAWN_SHIELD_BONUS = 10
+ATTACKER_PENALTY = 20
+
 
 def evaluate(board: Board) -> int:
     mg_score = 0
     eg_score = 0
     phase = 0
-    for square, piece in board._board.piece_map().items():
+    mobility_score = 0
+    tropism_score = 0
+    pawn_shield = 0
+    attacker_score = 0
+
+    piece_map = board._board.piece_map()
+    white_king = board._board.king(chess.WHITE)
+    black_king = board._board.king(chess.BLACK)
+
+    for square, piece in piece_map.items():
         color = 1 if piece.color == chess.WHITE else -1
         pt = piece.piece_type
         idx = square if piece.color == chess.WHITE else chess.square_mirror(square)
         mg_score += color * (PIECE_VALUES[pt] + MG_PST[pt][idx])
         eg_score += color * (PIECE_VALUES[pt] + EG_PST[pt][idx])
         phase += PIECE_PHASE[pt]
+
+        mobility_score += color * MOBILITY_WEIGHTS[pt] * len(board._board.attacks(square))
+
+        enemy_king = black_king if piece.color == chess.WHITE else white_king
+        if enemy_king is not None:
+            dist = chess.square_distance(square, enemy_king)
+            tropism_score += color * TROPISM_WEIGHTS[pt] * (7 - dist)
+
+    def _pawn_shield_for(color: chess.Color) -> int:
+        king_sq = white_king if color == chess.WHITE else black_king
+        if king_sq is None:
+            return 0
+        direction = 8 if color == chess.WHITE else -8
+        shield = 0
+        for df in (-1, 0, 1):
+            sq = king_sq + direction + df
+            if 0 <= sq < 64:
+                p = piece_map.get(sq)
+                if p and p.color == color and p.piece_type == chess.PAWN:
+                    shield += 1
+        return shield
+
+    pawn_shield += PAWN_SHIELD_BONUS * _pawn_shield_for(chess.WHITE)
+    pawn_shield -= PAWN_SHIELD_BONUS * _pawn_shield_for(chess.BLACK)
+
+    def _attackers_around(king_sq: int, color: chess.Color) -> int:
+        if king_sq is None:
+            return 0
+        attackers = 0
+        for sq in chess.SquareSet(chess.BB_KING_ATTACKS[king_sq]):
+            attackers += len(board._board.attackers(not color, sq))
+        return attackers
+
+    attacker_score -= ATTACKER_PENALTY * _attackers_around(white_king, chess.WHITE)
+    attacker_score += ATTACKER_PENALTY * _attackers_around(black_king, chess.BLACK)
+
     phase = min(phase, TOTAL_PHASE)
-    return (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
+    base = (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
+    return base + mobility_score + pawn_shield + attacker_score + tropism_score
 
 
 def minimax(board: Board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
