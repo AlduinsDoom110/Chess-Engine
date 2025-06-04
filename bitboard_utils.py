@@ -41,6 +41,7 @@ for sq in chess.SQUARES:
     BLACK_PAWN_CAPTURES[sq] = chess.shift_down_left(bb) | chess.shift_down_right(bb)
 
 
+@njit(forceobj=True)
 def rook_attacks(square: int, occupied: int) -> int:
     """Return rook attacks using rotated bitboards with caching."""
     key = (square, occupied)
@@ -58,6 +59,7 @@ def rook_attacks(square: int, occupied: int) -> int:
     return attacks
 
 
+@njit(forceobj=True)
 def bishop_attacks(square: int, occupied: int) -> int:
     """Return bishop attacks using rotated bitboards with caching."""
     key = (square, occupied)

@@ -2,6 +2,7 @@ from typing import Optional, Union, List, Tuple
 import chess
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing
+import struct
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
@@ -424,9 +425,13 @@ class _TTEntry:
         self.move = move
 
 
-# Transposition table and heuristics
-_TT: dict = {}
+# Transposition table stored in a flat bytearray
+_TT_SIZE = 1 << 20  # number of entries
+_TT_MASK = _TT_SIZE - 1
+_ENTRY_SIZE = 16
+_TT_ARRAY = bytearray(_TT_SIZE * _ENTRY_SIZE)
 _TT_LOCK: Optional[multiprocessing.Lock] = None
+_TT_SHARED = False
 _HISTORY: dict = {}
 _BUTTERFLY: dict = {}
 _CAPTURE_HISTORY: dict = {}
@@ -438,26 +443,74 @@ CHECK_EXTENSION_DEPTH = 8
 DELTA_MARGIN = 200
 
 
-def _init_worker(shared_tt, lock) -> None:
+def _init_worker(shared_array, lock) -> None:
     """Initializer for worker processes to share the transposition table."""
-    global _TT, _TT_LOCK
-    _TT = shared_tt
+    global _TT_ARRAY, _TT_LOCK, _TT_SHARED
+    _TT_ARRAY = shared_array
     _TT_LOCK = lock
+    _TT_SHARED = True
 
 
-def _tt_get(key):
+def _pack_move(move: Optional[Move]) -> int:
+    if move is None:
+        return 0
+    promo_map = {'n': 1, 'b': 2, 'r': 3, 'q': 4,
+                 'N': 1, 'B': 2, 'R': 3, 'Q': 4}
+    promo = promo_map.get(move.promotion, 0)
+    return (move.from_square << 10) | (move.to_square << 4) | promo
+
+
+def _unpack_move(data: int) -> Optional[Move]:
+    if not data:
+        return None
+    from_sq = (data >> 10) & 0x3F
+    to_sq = (data >> 4) & 0x3F
+    promo = data & 0xF
+    promo_map = {1: 'n', 2: 'b', 3: 'r', 4: 'q'}
+    promotion = promo_map.get(promo)
+    return Move(from_sq, to_sq, promotion)
+
+
+def _tt_index(key: int) -> int:
+    return (key & _TT_MASK) * _ENTRY_SIZE
+
+
+def _tt_get(key: int) -> Optional[_TTEntry]:
     if _TT_LOCK:
         with _TT_LOCK:
-            return _TT.get(key)
-    return _TT.get(key)
-
-
-def _tt_set(key, value) -> None:
-    if _TT_LOCK:
-        with _TT_LOCK:
-            _TT[key] = value
+            idx = _tt_index(key)
+            stored = int.from_bytes(_TT_ARRAY[idx:idx + 8], 'little')
     else:
-        _TT[key] = value
+        idx = _tt_index(key)
+        stored = int.from_bytes(_TT_ARRAY[idx:idx + 8], 'little')
+    if stored != key:
+        return None
+    depth = _TT_ARRAY[idx + 8]
+    value = int.from_bytes(_TT_ARRAY[idx + 9:idx + 13], 'little', signed=True)
+    flag = _TT_ARRAY[idx + 13]
+    move_data = int.from_bytes(_TT_ARRAY[idx + 14:idx + 16], 'little')
+    move = _unpack_move(move_data)
+    return _TTEntry(depth, value, flag, move)
+
+
+def _tt_set(key: int, value: _TTEntry) -> None:
+    if _TT_LOCK:
+        with _TT_LOCK:
+            idx = _tt_index(key)
+            _TT_ARRAY[idx:idx + 8] = key.to_bytes(8, 'little')
+            _TT_ARRAY[idx + 8] = value.depth & 0xFF
+            _TT_ARRAY[idx + 9:idx + 13] = int(value.value).to_bytes(4, 'little', signed=True)
+            _TT_ARRAY[idx + 13] = value.flag & 0xFF
+            move_data = _pack_move(value.move)
+            _TT_ARRAY[idx + 14:idx + 16] = move_data.to_bytes(2, 'little')
+    else:
+        idx = _tt_index(key)
+        _TT_ARRAY[idx:idx + 8] = key.to_bytes(8, 'little')
+        _TT_ARRAY[idx + 8] = value.depth & 0xFF
+        _TT_ARRAY[idx + 9:idx + 13] = int(value.value).to_bytes(4, 'little', signed=True)
+        _TT_ARRAY[idx + 13] = value.flag & 0xFF
+        move_data = _pack_move(value.move)
+        _TT_ARRAY[idx + 14:idx + 16] = move_data.to_bytes(2, 'little')
 
 
 def _eval_for_side(board: Board, ply: int) -> int:
@@ -645,7 +698,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     if board.is_game_over():
         return _eval_for_side(board, ply)
 
-    key = board._board._transposition_key()
+    key = board.hash
     entry: Optional[_TTEntry] = _tt_get(key)
     if entry and entry.depth >= depth:
         if entry.flag == 0:
@@ -765,7 +818,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
 
 
 def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optional[Move], int]:
-    key = board._board._transposition_key()
+    key = board.hash
     entry = _tt_get(key)
     tt_move = entry.move if entry else None
     moves = board.generate_moves()
@@ -868,7 +921,10 @@ def find_best_move(
     score = 0
     window = 50
     if threads <= 1 and multipv == 1:
-        for d in range(1, depth + 1):
+        last_score: Optional[int] = None
+        extra_depth = 0
+        d = 1
+        while d <= depth + extra_depth:
             for k in list(_CAPTURE_HISTORY.keys()):
                 _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
             _NODE_LIMIT = node_limit
@@ -889,6 +945,15 @@ def find_best_move(
                     break
             if _NODE_LIMIT is not None and _NODE_LIMIT <= 0:
                 break
+            if last_score is not None:
+                pv_flip = (
+                    (score >= MATE_VALUE - 100 and last_score < 300) or
+                    (last_score >= MATE_VALUE - 100 and score < 300)
+                )
+                if pv_flip and extra_depth < 2:
+                    extra_depth += 1
+            last_score = score
+            d += 1
         _NODE_LIMIT = None
         return best_move
 
@@ -898,32 +963,26 @@ def find_best_move(
         # Original root-parallel search for MultiPV or single-thread
         moves = board.generate_moves()
         if threads <= 1:
-            _TT = {}
             _TT_LOCK = None
+            _TT_ARRAY[:] = b"\x00" * len(_TT_ARRAY)
             for m in moves:
                 results.append(_search_move_thread((board, m, depth)))
         else:
-            manager = multiprocessing.Manager()
-            shared_tt = manager.dict()
-            lock = manager.Lock()
-            _TT = shared_tt
-            _TT_LOCK = lock
+            lock = multiprocessing.Lock()
+            shared_array = multiprocessing.Array('B', len(_TT_ARRAY), lock=False)
             with ProcessPoolExecutor(max_workers=threads,
                                     initializer=_init_worker,
-                                    initargs=(shared_tt, lock)) as pool:
+                                    initargs=(shared_array, lock)) as pool:
                 futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
                 for f in futs:
                     results.append(f.result())
     else:
         # Lazy SMP style search with shared transposition table
-        manager = multiprocessing.Manager()
-        shared_tt = manager.dict()
-        lock = manager.Lock()
-        _TT = shared_tt
-        _TT_LOCK = lock
+        lock = multiprocessing.Lock()
+        shared_array = multiprocessing.Array('B', len(_TT_ARRAY), lock=False)
         with ProcessPoolExecutor(max_workers=threads,
                                 initializer=_init_worker,
-                                initargs=(shared_tt, lock)) as pool:
+                                initargs=(shared_array, lock)) as pool:
             futs = [pool.submit(_lazy_smp_worker, (board, depth, node_limit)) for _ in range(threads)]
             for f in futs:
                 results.append(f.result())
