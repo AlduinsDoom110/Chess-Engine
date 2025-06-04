@@ -316,6 +316,7 @@ def evaluate(board: Board, ply: int = 0) -> int:
 # --- Search ---------------------------------------------------------------
 
 INFINITY = 10_000_000
+MATE_VALUE = INFINITY - 1000
 
 
 class _TTEntry:
@@ -340,11 +341,54 @@ def _eval_for_side(board: Board, ply: int) -> int:
     return val if board.turn == "w" else -val
 
 
+def _to_chess_move(move: Move) -> chess.Move:
+    return chess.Move(
+        move.from_square,
+        move.to_square,
+        promotion=_piece_type_from_letter(move.promotion) if move.promotion else None,
+    )
+
+
+def _see(board: Board, move: Move) -> int:
+    return board._board.see(_to_chess_move(move))
+
+
+def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
+    stand_pat = _eval_for_side(board, ply)
+    if stand_pat >= beta:
+        return beta
+    if stand_pat > alpha:
+        alpha = stand_pat
+
+    moves = []
+    for m in board.generate_moves():
+        cm = _to_chess_move(m)
+        if board._board.is_capture(cm) or board._board.gives_check(cm):
+            moves.append(m)
+
+    _order_moves(board, moves, None, ply, None)
+
+    for m in moves:
+        child = board.copy()
+        child.push(m)
+        score = -_quiescence(child, -beta, -alpha, ply + 1)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+
 def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, prev: Optional[Move]) -> None:
     def score(m: Move) -> int:
         s = 0
         if tt_move and m == tt_move:
             s += 1_000_000
+        cm = _to_chess_move(m)
+        if board._board.is_capture(cm):
+            s += 100_000 + _see(board, m)
+        elif board._board.gives_check(cm):
+            s += 90_000
         km = _KILLERS[ply]
         if km[0] and m == km[0]:
             s += 900_000
@@ -360,7 +404,14 @@ def _order_moves(board: Board, moves: list, tt_move: Optional[Move], ply: int, p
 
 def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
              prev: Optional[Move], allow_null: bool = True) -> int:
-    if depth == 0 or board.is_game_over():
+    alpha = max(alpha, -MATE_VALUE + ply)
+    beta = min(beta, MATE_VALUE - ply)
+    if alpha >= beta:
+        return alpha
+
+    if depth <= 0:
+        return _quiescence(board, alpha, beta, ply)
+    if board.is_game_over():
         return _eval_for_side(board, ply)
 
     key = board._board._transposition_key()
@@ -378,6 +429,14 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     if entry is None and depth >= 3:
         _negamax(board, depth - 2, alpha, beta, ply, prev, allow_null)
         entry = _TT.get(key)
+
+    if depth <= 2 and not board.is_check():
+        eval_static = _eval_for_side(board, ply)
+        margin = 100 * depth
+        if eval_static + margin <= alpha:
+            return _quiescence(board, alpha, beta, ply)
+        if eval_static - margin >= beta:
+            return eval_static
 
     # Null move pruning with verification search
     if allow_null and depth >= 3 and not board.is_check():
@@ -408,27 +467,28 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     moves = board.generate_moves()
     tt_move = entry.move if entry else None
     _order_moves(board, moves, tt_move, ply, prev)
+    singular = not board.is_check() and len(moves) <= 2 and depth > 1
 
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
         child = board.copy()
         child.push(m)
-        chess_move = chess.Move(m.from_square, m.to_square,
-                               promotion=_piece_type_from_letter(m.promotion)
-                               if m.promotion else None)
-        capture = board._board.is_capture(chess_move)
+        cm = _to_chess_move(m)
+        capture = board._board.is_capture(cm)
+        ext = 1 if singular else 0
 
         if i == 0:
-            score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
+            score = -_negamax(child, depth - 1 + ext, -beta, -alpha, ply + 1, m)
         else:
             reduction = 1 if depth >= 3 and i >= 3 and not capture else 0
-            score = -_negamax(child, depth - 1 - reduction, -alpha - 1,
+            score = -_negamax(child, depth - 1 - reduction + ext, -alpha - 1,
                               -alpha, ply + 1, m)
             if score > alpha and reduction:
-                score = -_negamax(child, depth - 1, -alpha - 1, -alpha, ply + 1,
-                                  m)
+                score = -_negamax(child, depth - 1 + ext, -alpha - 1, -alpha,
+                                  ply + 1, m)
             if score > alpha and score < beta:
-                score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, m)
+                score = -_negamax(child, depth - 1 + ext, -beta, -alpha,
+                                  ply + 1, m)
         if score >= beta:
             if not capture:
                 if _KILLERS[ply][0] != m:
@@ -455,17 +515,19 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     tt_move = entry.move if entry else None
     moves = board.generate_moves()
     _order_moves(board, moves, tt_move, 0, None)
+    singular = not board.is_check() and len(moves) <= 2 and depth > 1
 
     best_move: Optional[Move] = None
     for i, m in enumerate(moves):
         child = board.copy()
         child.push(m)
+        ext = 1 if singular else 0
         if i == 0:
-            score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
+            score = -_negamax(child, depth - 1 + ext, -beta, -alpha, 1, m)
         else:
-            score = -_negamax(child, depth - 1, -alpha - 1, -alpha, 1, m)
+            score = -_negamax(child, depth - 1 + ext, -alpha - 1, -alpha, 1, m)
             if score > alpha:
-                score = -_negamax(child, depth - 1, -beta, -alpha, 1, m)
+                score = -_negamax(child, depth - 1 + ext, -beta, -alpha, 1, m)
         if score > alpha:
             alpha = score
             best_move = m
