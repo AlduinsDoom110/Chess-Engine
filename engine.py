@@ -1,6 +1,6 @@
-from typing import Optional
+from typing import Optional, Union, List, Tuple
 import chess
-import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 
@@ -628,7 +628,8 @@ def _search_root(board: Board, depth: int, alpha: int, beta: int) -> tuple[Optio
     return best_move, alpha
 
 
-def _search_move_mp(args: tuple[Board, Move, int]) -> tuple[Move, int]:
+def _search_move_thread(args: tuple[Board, Move, int]) -> tuple[Move, int]:
+    """Search a single move. Used for threaded root search."""
     board, move, depth = args
     child = board.copy()
     try:
@@ -639,12 +640,34 @@ def _search_move_mp(args: tuple[Board, Move, int]) -> tuple[Move, int]:
     return move, value
 
 
-def find_best_move(board: Board, depth: int, node_limit: Optional[int] = None, workers: int = 1) -> Optional[Move]:
+def find_best_move(
+    board: Board,
+    depth: int,
+    node_limit: Optional[int] = None,
+    threads: int = 1,
+    multipv: int = 1,
+) -> Optional[Union[Move, list[Move]]]:
+    """Search for the best move.
+
+    Parameters
+    ----------
+    board : Board
+        Board to search from.
+    depth : int
+        Search depth in plies.
+    node_limit : Optional[int]
+        Optional maximum number of nodes to search.
+    threads : int
+        Number of worker threads to use for the root search.
+    multipv : int
+        If greater than 1, return the top ``multipv`` moves.
+    """
+
     global _NODE_LIMIT
     best_move: Optional[Move] = None
     score = 0
     window = 50
-    if workers <= 1:
+    if threads <= 1 and multipv == 1:
         for d in range(1, depth + 1):
             for k in list(_CAPTURE_HISTORY.keys()):
                 _CAPTURE_HISTORY[k] = int(_CAPTURE_HISTORY[k] * 0.9)
@@ -669,11 +692,25 @@ def find_best_move(board: Board, depth: int, node_limit: Optional[int] = None, w
         _NODE_LIMIT = None
         return best_move
 
-    # Parallel search of root moves without iterative deepening
+    # Parallel search of root moves (no iterative deepening)
     moves = board.generate_moves()
-    with mp.Pool(processes=workers) as pool:
-        results = pool.map(_search_move_mp, [(board, m, depth) for m in moves])
+    results: List[Tuple[Move, int]] = []
+    if threads <= 1:
+        for m in moves:
+            results.append(_search_move_thread((board, m, depth)))
+    else:
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            futs = [pool.submit(_search_move_thread, (board, m, depth)) for m in moves]
+            for f in futs:
+                results.append(f.result())
+
     if not results:
-        return None
-    best_move, score = max(results, key=lambda x: x[1])
+        return None if multipv == 1 else []
+
+    results.sort(key=lambda x: x[1], reverse=True)
+
+    if multipv > 1:
+        return [m for m, _ in results[:multipv]]
+
+    best_move, _ = results[0]
     return best_move
