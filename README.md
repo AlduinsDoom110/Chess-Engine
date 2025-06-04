@@ -15,7 +15,7 @@ Run the `main.py` script to play against the engine. Moves are entered in simple
 coordinate notation, for example `e2e4`.
 
 ```bash
-python3 main.py
+python3 main.py --book mybook.bin
 ```
 
 ## Modules
@@ -40,6 +40,8 @@ improvements.
 * Rotated bitboards with caching for rook and bishop rays.
 * Pseudo-legal move generation with lazy legality checks.
 * Basic attack map cache keyed by occupancy.
+* Opening book support via Polyglot ``.bin`` files. Use ``--book <path>`` or
+  ``setoption name Book value <file>`` to enable.
 
 This repository contains a small Python chess engine built on top of the
 [`python-chess`](https://python-chess.readthedocs.io/) library.  It supports all
@@ -72,6 +74,8 @@ python3 uci.py
 ```
 
 Only a subset of the protocol is supported (e.g. `position` and `go depth N`).
+Use `setoption name Book value <file>` to load a Polyglot book when running
+under UCI.
 
 ### Threading and Multi-PV
 

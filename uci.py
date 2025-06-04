@@ -1,13 +1,15 @@
 """UCI interface for the simple chess engine."""
 
-from typing import List
+from typing import List, Optional
 import sys
 
 from board import Board, Move, InvalidMoveError
 from engine import find_best_move
+from opening_book import OpeningBook
 
 THREADS = 1
 MULTIPV = 1
+BOOK: Optional[OpeningBook] = None
 
 
 def _square_from_str(square: str) -> int:
@@ -55,7 +57,24 @@ def main() -> None:
         elif line == "isready":
             print("readyok")
         elif line.startswith("setoption"):
-            # Options are ignored; engine runs with fixed parameters
+            tokens = line.split()
+            if "name" in tokens and "value" in tokens:
+                name_idx = tokens.index("name") + 1
+                value_idx = tokens.index("value") + 1
+                name = " ".join(tokens[name_idx:value_idx - 1]).lower()
+                value = " ".join(tokens[value_idx:])
+                if name == "book":
+                    global BOOK
+                    if BOOK is not None:
+                        BOOK.close()
+                    if value:
+                        try:
+                            BOOK = OpeningBook(value)
+                        except OSError:
+                            BOOK = None
+                    else:
+                        BOOK = None
+                    continue
             continue
         elif line == "ucinewgame":
             board = Board()
@@ -90,7 +109,7 @@ def main() -> None:
                 except ValueError:
                     depth = 5
 
-            result = find_best_move(board, depth, threads=THREADS, multipv=MULTIPV)
+            result = find_best_move(board, depth, threads=THREADS, multipv=MULTIPV, book=BOOK)
             if isinstance(result, list):
                 for idx, m in enumerate(result, 1):
                     print(f"info multipv {idx} pv {_move_to_uci(m)}")
@@ -103,6 +122,8 @@ def main() -> None:
             else:
                 print(f"bestmove {_move_to_uci(best)}")
         elif line == "quit":
+            if BOOK is not None:
+                BOOK.close()
             break
         elif line == "stop":
             # Synchronous search cannot be stopped; ignore

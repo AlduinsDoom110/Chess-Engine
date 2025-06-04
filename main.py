@@ -2,6 +2,7 @@ import argparse
 
 from board import Board, Move, InvalidMoveError
 from engine import find_best_move
+from opening_book import OpeningBook
 
 
 def parse_move(move_str: str) -> int:
@@ -32,9 +33,16 @@ def main() -> None:
         default=5,
         help="search depth in plies (default: 5)",
     )
+    parser.add_argument(
+        "--book",
+        type=str,
+        default=None,
+        help="path to a Polyglot opening book",
+    )
     args = parser.parse_args()
 
     depth = max(1, args.depth)
+    book = OpeningBook(args.book) if args.book else None
 
     board = Board()
     while True:
@@ -52,7 +60,7 @@ def main() -> None:
                 print(f'Invalid move: {e}')
                 continue
         else:
-            best = find_best_move(board, depth)
+            best = find_best_move(board, depth, book=book)
             if best is None:
                 print('No moves available.')
                 break
