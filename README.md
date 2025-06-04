@@ -75,12 +75,14 @@ Only a subset of the protocol is supported (e.g. `position` and `go depth N`).
 
 ### Threading and Multi-PV
 
-`uci.py` now supports the standard `Threads` and `MultiPV` options.  The
-engine uses multiple processes when more than one thread is requested so that it
-can take advantage of multiple CPU cores. When running with multiple threads the
-transposition table is shared between workers. Set the options with the UCI
-`setoption` command to control how many worker processes are used for the root
-search and how many principal variations are reported:
+`uci.py` now supports the standard `Threads` and `MultiPV` options.  When more
+than one thread is requested the engine runs a *Lazy SMP* style search: each
+worker performs its own iterative deepening search while sharing a single
+transposition table through Python's multiprocessing utilities.  This allows the
+full search algorithm (including move ordering and iterative deepening) to take
+advantage of multiple CPU cores.  Use the UCI `setoption` command to control how
+many worker processes are spawned and how many principal variations are
+reported:
 
 ```text
 setoption name Threads value 4
