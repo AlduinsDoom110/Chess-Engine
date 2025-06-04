@@ -929,6 +929,7 @@ def find_best_move(
     node_limit: Optional[int] = None,
     threads: int = 1,
     multipv: int = 1,
+    book: Optional[OpeningBook] = None,
 ) -> Optional[Union[Move, list[Move]]]:
     """Search for the best move.
 
@@ -944,9 +945,16 @@ def find_best_move(
         Number of worker threads to use for the root search.
     multipv : int
         If greater than 1, return the top ``multipv`` moves.
+    book : Optional[OpeningBook]
+        Opening book to consult before searching.
     """
 
     global _NODE_LIMIT, _TT, _TT_LOCK
+    if book is not None:
+        move = book.get_book_move(board)
+        if move is not None:
+            return move
+
     best_move: Optional[Move] = None
     score = 0
     window = 50
