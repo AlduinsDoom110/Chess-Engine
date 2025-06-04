@@ -1,3 +1,5 @@
+import argparse
+
 from board import Board, Move, InvalidMoveError
 from engine import find_best_move
 
@@ -23,6 +25,17 @@ def move_to_str(move_from: int, move_to: int) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Play against the engine")
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=5,
+        help="search depth in plies (default: 5)",
+    )
+    args = parser.parse_args()
+
+    depth = max(1, args.depth)
+
     board = Board()
     while True:
         print(board.get_fen())
@@ -39,7 +52,7 @@ def main() -> None:
                 print(f'Invalid move: {e}')
                 continue
         else:
-            best = find_best_move(board, 5)
+            best = find_best_move(board, depth)
             if best is None:
                 print('No moves available.')
                 break

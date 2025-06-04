@@ -34,7 +34,8 @@ improvements.
 * Precomputed pawn move and capture tables.
 * Simple sliding attack generators.
 * Zobrist hash updated after every move.
-* Engine searches at a fixed depth of 5 plies.
+* Default search depth is 5 plies but can be changed via the UCI `go depth`
+  command or the `--depth` option when running `main.py`.
 * ``perft`` validation routines relying on ``python-chess``.
 * Rotated bitboards with caching for rook and bishop rays.
 * Pseudo-legal move generation with lazy legality checks.
