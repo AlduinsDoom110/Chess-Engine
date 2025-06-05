@@ -8,12 +8,44 @@ import struct
 import math
 from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
+from pathlib import Path
+import numpy as np
+import torch
 
 if TYPE_CHECKING:
     from opening_book import OpeningBook
 
 # Cache for attack maps keyed by occupancy bitboard
 _ATTACK_CACHE: dict[int, dict[int, int]] = {}
+
+_WEIGHTS_FILE = Path(__file__).with_name("nnue_weights.pt")
+
+
+class _SimpleNNUE(torch.nn.Module):
+    def __init__(self, input_dim: int = 769, hidden_dim: int = 256) -> None:
+        super().__init__()
+        self.fc1 = torch.nn.Linear(input_dim, hidden_dim)
+        self.fc2 = torch.nn.Linear(hidden_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.relu(self.fc1(x))
+        return self.fc2(x).squeeze(-1)
+
+
+def _load_nnue() -> Optional[_SimpleNNUE]:
+    if not _WEIGHTS_FILE.exists():
+        return None
+    model = _SimpleNNUE()
+    try:
+        state = torch.load(_WEIGHTS_FILE, map_location="cpu")
+        model.load_state_dict(state)
+        model.eval()
+        return model
+    except Exception:
+        return None
+
+
+_NNUE = _load_nnue()
 
 
 def _get_attacks(board: Board, square: int) -> int:
@@ -25,6 +57,29 @@ def _get_attacks(board: Board, square: int) -> int:
         att = board._board.attacks_mask(square)
         cache[square] = att
     return att
+
+
+def _board_to_features(board: Board) -> np.ndarray:
+    feats = np.zeros(769, dtype=np.float32)
+    b = board._board
+    for sq in chess.SQUARES:
+        piece = b.piece_at(sq)
+        if piece:
+            idx = piece.piece_type - 1
+            if piece.color == chess.BLACK:
+                idx += 6
+            feats[idx * 64 + sq] = 1.0
+    feats[-1] = 1.0 if b.turn == chess.WHITE else -1.0
+    return feats
+
+
+def _nnue_eval(board: Board) -> int:
+    if _NNUE is None:
+        return 0
+    feats = torch.from_numpy(_board_to_features(board))
+    with torch.no_grad():
+        val = _NNUE(feats).item()
+    return int(val)
 
 # Kaufman piece values used for the material imbalance evaluation
 PIECE_VALUES = {
@@ -312,7 +367,7 @@ def _terminal_score(board: Board, ply: int) -> int:
         return -MATE_VALUE + ply
     if board._board.is_stalemate():
         return 0
-    return 0
+    return _nnue_eval(board)
 
 
 def _to_chess_move(move: Move) -> chess.Move:
