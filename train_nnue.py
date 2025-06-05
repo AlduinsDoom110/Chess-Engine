@@ -12,8 +12,8 @@ import numpy as np
 
 BERSERK_PATH = Path(__file__).with_name("berserk-13-avx2.exe")
 WEIGHTS_FILE = Path(__file__).with_name("nnue_weights.pt")
-SAMPLE_SIZE = 100_000
-DEPTH = 13
+SAMPLE_SIZE = 1_000  # number of random positions to generate
+DEPTH = 8            # Berserk evaluation depth
 BATCH_SIZE = 64
 EPOCHS = 1
 
