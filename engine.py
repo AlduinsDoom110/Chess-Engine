@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 # Cache for attack maps keyed by occupancy bitboard
 _ATTACK_CACHE: dict[int, dict[int, int]] = {}
 
-_WEIGHTS_FILE = Path(__file__).with_name("nnue_weights.pt")
+_NNUE_BIN_FILE = Path(__file__).with_name("nnue_weights.nnue")
+_WEIGHTS_FILE_PT = Path(__file__).with_name("nnue_weights.pt")
 
 
 class _SimpleNNUE(torch.nn.Module):
@@ -41,14 +42,41 @@ _NNUE_PARAMS: Optional[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = None
 def _load_nnue() -> None:
     """Load the NNUE weights as NumPy arrays for fast evaluation."""
     global _NNUE_PARAMS
-    if torch is None or not _WEIGHTS_FILE.exists():
+
+    if torch is None:
         _NNUE_PARAMS = None
         return
+
+    if _NNUE_BIN_FILE.exists():
+        try:
+            with open(_NNUE_BIN_FILE, "rb") as f:
+                if f.read(5) != b"NNUE1":
+                    raise ValueError("bad nnue header")
+                scale1 = np.frombuffer(f.read(4), dtype=np.float32)[0]
+                scale2 = np.frombuffer(f.read(4), dtype=np.float32)[0]
+                w1_q = np.frombuffer(f.read(769 * 256 * 2), dtype="<i2").reshape(769, 256)
+                b1_q = np.frombuffer(f.read(256 * 4), dtype="<i4")
+                w2_q = np.frombuffer(f.read(256 * 2), dtype="<i2")
+                b2_q = np.frombuffer(f.read(4), dtype="<i4")[0]
+            w1 = w1_q.astype(np.float32) / scale1
+            b1 = b1_q.astype(np.float32) / scale1
+            w2 = w2_q.astype(np.float32) / scale2
+            b2 = float(b2_q) / scale2
+            _NNUE_PARAMS = (w1, b1, w2, b2)
+            return
+        except Exception:
+            _NNUE_PARAMS = None
+            return
+
+    if not _WEIGHTS_FILE_PT.exists():
+        _NNUE_PARAMS = None
+        return
+
     try:
-        state = torch.load(_WEIGHTS_FILE, map_location="cpu")
+        state = torch.load(_WEIGHTS_FILE_PT, map_location="cpu")
         w1 = state["fc1.weight"].numpy().T  # (input, hidden)
         b1 = state["fc1.bias"].numpy()
-        w2 = state["fc2.weight"].numpy().reshape(-1)  # (hidden,)
+        w2 = state["fc2.weight"].numpy().reshape(-1)
         b2 = float(state["fc2.bias"].item())
         _NNUE_PARAMS = (w1, b1, w2, b2)
     except Exception:
