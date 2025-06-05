@@ -32,7 +32,7 @@ class _SimpleNNUE(torch.nn.Module):
         return self.fc2(x).squeeze(-1)
 
 
-def _load_nnue() -> Optional[_SimpleNNUE]:
+def _load_nnue() -> Optional[torch.jit.ScriptModule]:
     if not _WEIGHTS_FILE.exists():
         return None
     model = _SimpleNNUE()
@@ -40,7 +40,11 @@ def _load_nnue() -> Optional[_SimpleNNUE]:
         state = torch.load(_WEIGHTS_FILE, map_location="cpu")
         model.load_state_dict(state)
         model.eval()
-        return model
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+        scripted = torch.jit.script(model)
+        scripted = torch.jit.optimize_for_inference(scripted)
+        return scripted
     except Exception:
         return None
 
