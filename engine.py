@@ -10,7 +10,10 @@ from board import Board, Move, InvalidMoveError, _piece_type_from_letter
 from bitboard_utils import popcount
 from pathlib import Path
 import numpy as np
-import torch
+try:
+    import torch
+except Exception:  # pragma: no cover - torch is optional for tests
+    torch = None
 
 if TYPE_CHECKING:
     from opening_book import OpeningBook
@@ -32,24 +35,27 @@ class _SimpleNNUE(torch.nn.Module):
         return self.fc2(x).squeeze(-1)
 
 
-def _load_nnue() -> Optional[torch.jit.ScriptModule]:
-    if not _WEIGHTS_FILE.exists():
-        return None
-    model = _SimpleNNUE()
+_NNUE_PARAMS: Optional[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = None
+
+
+def _load_nnue() -> None:
+    """Load the NNUE weights as NumPy arrays for fast evaluation."""
+    global _NNUE_PARAMS
+    if torch is None or not _WEIGHTS_FILE.exists():
+        _NNUE_PARAMS = None
+        return
     try:
         state = torch.load(_WEIGHTS_FILE, map_location="cpu")
-        model.load_state_dict(state)
-        model.eval()
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
-        scripted = torch.jit.script(model)
-        scripted = torch.jit.optimize_for_inference(scripted)
-        return scripted
+        w1 = state["fc1.weight"].numpy().T  # (input, hidden)
+        b1 = state["fc1.bias"].numpy()
+        w2 = state["fc2.weight"].numpy().reshape(-1)  # (hidden,)
+        b2 = float(state["fc2.bias"].item())
+        _NNUE_PARAMS = (w1, b1, w2, b2)
     except Exception:
-        return None
+        _NNUE_PARAMS = None
 
 
-_NNUE = _load_nnue()
+_load_nnue()
 
 
 def _get_attacks(board: Board, square: int) -> int:
@@ -64,25 +70,26 @@ def _get_attacks(board: Board, square: int) -> int:
 
 
 def _board_to_features(board: Board) -> np.ndarray:
+    """Convert a board to NNUE input features."""
     feats = np.zeros(769, dtype=np.float32)
     b = board._board
-    for sq in chess.SQUARES:
-        piece = b.piece_at(sq)
-        if piece:
-            idx = piece.piece_type - 1
-            if piece.color == chess.BLACK:
-                idx += 6
-            feats[idx * 64 + sq] = 1.0
+    for piece_type in chess.PIECE_TYPES:
+        for sq in b.pieces(piece_type, chess.WHITE):
+            feats[(piece_type - 1) * 64 + sq] = 1.0
+        for sq in b.pieces(piece_type, chess.BLACK):
+            feats[(piece_type + 5) * 64 + sq] = 1.0
     feats[-1] = 1.0 if b.turn == chess.WHITE else -1.0
     return feats
 
 
 def _nnue_eval(board: Board) -> int:
-    if _NNUE is None:
+    """Evaluate using the loaded NNUE weights if available."""
+    if _NNUE_PARAMS is None:
         return 0
-    feats = torch.from_numpy(_board_to_features(board))
-    with torch.no_grad():
-        val = _NNUE(feats).item()
+    feats = _board_to_features(board)
+    w1, b1, w2, b2 = _NNUE_PARAMS
+    hidden = np.maximum(0, feats @ w1 + b1)
+    val = float(hidden @ w2 + b2)
     return int(val)
 
 # Kaufman piece values used for the material imbalance evaluation
