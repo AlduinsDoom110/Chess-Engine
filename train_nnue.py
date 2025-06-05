@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 
 BERSERK_PATH = Path(__file__).with_name("berserk-13-avx2.exe")
-WEIGHTS_FILE = Path(__file__).with_name("nnue_weights.pt")
+WEIGHTS_FILE = Path(__file__).with_name("nnue_weights.nnue")
 SAMPLE_SIZE = 1_000  # number of random positions to generate
 DEPTH = 8            # Berserk evaluation depth
 BATCH_SIZE = 64
@@ -115,8 +115,32 @@ def main():
             loss.backward()
             optim.step()
 
-    torch.save(model.state_dict(), WEIGHTS_FILE)
-    print(f"Saved weights to {WEIGHTS_FILE}")
+    # Quantize weights in a very small integer format similar to Stockfish
+    w1 = model.fc1.weight.detach().numpy().T
+    b1 = model.fc1.bias.detach().numpy()
+    w2 = model.fc2.weight.detach().numpy().reshape(-1)
+    b2 = float(model.fc2.bias.detach().item())
+
+    def quantize(arr):
+        max_abs = float(np.max(np.abs(arr))) if arr.size > 0 else 1.0
+        scale = 32767.0 / max_abs if max_abs != 0 else 1.0
+        quant = np.round(arr * scale).astype(np.int16)
+        return quant, scale
+
+    w1_q, scale1 = quantize(w1)
+    b1_q = np.round(b1 * scale1).astype(np.int32)
+    w2_q, scale2 = quantize(w2)
+    b2_q = int(round(b2 * scale2))
+
+    with open(WEIGHTS_FILE, "wb") as f:
+        f.write(b"NNUE1")
+        f.write(np.float32(scale1).tobytes())
+        f.write(np.float32(scale2).tobytes())
+        f.write(w1_q.astype("<i2").tobytes())
+        f.write(b1_q.astype("<i4").tobytes())
+        f.write(w2_q.astype("<i2").tobytes())
+        f.write(np.int32([b2_q]).astype("<i4").tobytes())
+    print(f"Saved quantized weights to {WEIGHTS_FILE}")
 
 
 if __name__ == "__main__":
