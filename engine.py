@@ -189,242 +189,6 @@ MATE_THREAT_BONUS = 400
 CASTLING_BONUS = 50
 
 
-def evaluate(board: Board, ply: int = 0) -> int:
-    mg_score = 0
-    eg_score = 0
-    white_material = 0
-    black_material = 0
-    phase = 0
-    mobility_score = 0
-    tropism_score = 0
-    pawn_shield = 0
-    attacker_score = 0
-
-    piece_map = board._board.piece_map()
-    white_king = board._board.king(chess.WHITE)
-    black_king = board._board.king(chess.BLACK)
-    castling_score = 0
-    if white_king in (chess.G1, chess.C1):
-        castling_score += CASTLING_BONUS
-    if black_king in (chess.G8, chess.C8):
-        castling_score -= CASTLING_BONUS
-
-    for square, piece in piece_map.items():
-        color = 1 if piece.color == chess.WHITE else -1
-        pt = piece.piece_type
-        idx = square if piece.color == chess.WHITE else chess.square_mirror(square)
-        mg_score += color * MG_PST[pt][idx]
-        eg_score += color * EG_PST[pt][idx]
-        if piece.color == chess.WHITE:
-            white_material += PIECE_VALUES[pt]
-        else:
-            black_material += PIECE_VALUES[pt]
-        phase += PIECE_PHASE[pt]
-
-        attacks = _get_attacks(board, square)
-        enemy_king = black_king if piece.color == chess.WHITE else white_king
-        prox_factor = 1.0
-        if enemy_king is not None:
-            dist = chess.square_distance(square, enemy_king)
-            prox_factor += MOBILITY_PROXIMITY_SCALE * (7 - dist) / 7
-            tropism_score += color * TROPISM_WEIGHTS[pt] * (7 - dist)
-        mobility_score += color * MOBILITY_WEIGHTS[pt] * popcount(attacks) * prox_factor
-
-    def _pawn_shield_for(color: chess.Color) -> int:
-        king_sq = white_king if color == chess.WHITE else black_king
-        if king_sq is None:
-            return 0
-        direction = 8 if color == chess.WHITE else -8
-        shield = 0
-        for df in (-1, 0, 1):
-            sq = king_sq + direction + df
-            if 0 <= sq < 64:
-                p = piece_map.get(sq)
-                if p and p.color == color and p.piece_type == chess.PAWN:
-                    shield += 1
-                    continue
-            sq2 = king_sq + 2 * direction + df
-            if 0 <= sq2 < 64:
-                p = piece_map.get(sq2)
-                if p and p.color == color and p.piece_type == chess.PAWN:
-                    shield += 1
-        return shield
-
-    white_shield_count = _pawn_shield_for(chess.WHITE)
-    black_shield_count = _pawn_shield_for(chess.BLACK)
-    pawn_shield += PAWN_SHIELD_BONUS * white_shield_count
-    pawn_shield -= PAWN_SHIELD_BONUS * black_shield_count
-
-    def _exposure_penalty(color: chess.Color) -> int:
-        king_sq = white_king if color == chess.WHITE else black_king
-        if king_sq is None:
-            return 0
-        penalty = EXPOSED_KING_PENALTY * max(0, 3 - _pawn_shield_for(color))
-        file = chess.square_file(king_sq)
-        friendly_pawns_bb = int(board._board.pieces(chess.PAWN, color))
-        enemy_pawns_bb = int(board._board.pieces(chess.PAWN, not color))
-        for df in (-1, 0, 1):
-            f = file + df
-            if 0 <= f <= 7:
-                friendly = friendly_pawns_bb & chess.BB_FILES[f]
-                if not friendly:
-                    enemy = enemy_pawns_bb & chess.BB_FILES[f]
-                    penalty += OPEN_FILE_PENALTY * (2 if not enemy else 1)
-        return penalty
-
-    pawn_shield -= _exposure_penalty(chess.BLACK)
-    pawn_shield += _exposure_penalty(chess.WHITE)
-
-    def _attackers_around(king_sq: int, color: chess.Color) -> int:
-        if king_sq is None:
-            return 0
-        attackers = 0
-        for sq in chess.SquareSet(chess.BB_KING_ATTACKS[king_sq]):
-            attackers += len(board._board.attackers(not color, sq))
-        return attackers
-
-    attacker_score -= ATTACKER_PENALTY * _attackers_around(white_king, chess.WHITE)
-    attacker_score += ATTACKER_PENALTY * _attackers_around(black_king, chess.BLACK)
-
-    pawn_struct_score = 0
-    bishop_pair_score = 0
-    rook_score = 0
-    space_score = 0
-    pawn_storm_score = 0
-
-    total_pawns = len(board._board.pieces(chess.PAWN, chess.WHITE)) + len(board._board.pieces(chess.PAWN, chess.BLACK))
-
-    for color in [chess.WHITE, chess.BLACK]:
-        sign = 1 if color == chess.WHITE else -1
-        pawns = list(board._board.pieces(chess.PAWN, color))
-        enemy_color = not color
-        enemy_pawns = list(board._board.pieces(chess.PAWN, enemy_color))
-        pawns_bb = int(board._board.pieces(chess.PAWN, color))
-        enemy_pawns_bb = int(board._board.pieces(chess.PAWN, enemy_color))
-
-        # Count space by advanced pawns beyond the 4th rank
-        if color == chess.WHITE:
-            advanced = [sq for sq in pawns if chess.square_rank(sq) >= 4]
-        else:
-            advanced = [sq for sq in pawns if chess.square_rank(sq) <= 3]
-        space_score += sign * SPACE_PAWN_BONUS * len(advanced)
-
-        enemy_king_sq = black_king if color == chess.WHITE else white_king
-        king_sq = white_king if color == chess.WHITE else black_king
-        shield_count = white_shield_count if color == chess.WHITE else black_shield_count
-        if king_sq is not None and enemy_king_sq is not None and shield_count >= 2:
-            ef = chess.square_file(enemy_king_sq)
-            for sq in advanced:
-                if abs(chess.square_file(sq) - ef) <= 1:
-                    pawn_storm_score += sign * PAWN_STORM_BONUS
-
-        # Bishop pair bonus scaled by openness
-        if len(board._board.pieces(chess.BISHOP, color)) >= 2:
-            openness = 16 - total_pawns
-            bishop_pair_score += sign * (BISHOP_PAIR_BONUS + openness * BISHOP_PAIR_SCALE)
-
-        # Pawn structure heuristics
-        for sq in pawns:
-            file = chess.square_file(sq)
-            rank = chess.square_rank(sq)
-
-            # Doubled pawns
-            if popcount(int(pawns_bb & chess.BB_FILES[file])) > 1:
-                pawn_struct_score -= sign * DOUBLED_PAWN_PENALTY
-
-            # Isolated pawns
-            adjacent = 0
-            if file > 0:
-                adjacent |= pawns_bb & chess.BB_FILES[file - 1]
-            if file < 7:
-                adjacent |= pawns_bb & chess.BB_FILES[file + 1]
-            if not adjacent:
-                pawn_struct_score -= sign * ISOLATED_PAWN_PENALTY
-
-            # Backward pawns (simple version)
-            direction = 8 if color == chess.WHITE else -8
-            front = sq + direction
-            blocked = not (0 <= front < 64 and board._board.piece_at(front) is None)
-            support = False
-            for df in (-1, 1):
-                nf = file + df
-                if 0 <= nf <= 7:
-                    for adj_sq in chess.SquareSet(pawns_bb & chess.BB_FILES[nf]):
-                        if (color == chess.WHITE and adj_sq > sq) or (color == chess.BLACK and adj_sq < sq):
-                            support = True
-                            break
-                if support:
-                    break
-            if blocked and not support:
-                pawn_struct_score -= sign * BACKWARD_PAWN_PENALTY
-
-            # Passed pawns
-            passed = True
-            for ep in enemy_pawns:
-                ef = chess.square_file(ep)
-                er = chess.square_rank(ep)
-                if ef in {file - 1, file, file + 1}:
-                    if (color == chess.WHITE and er > rank) or (color == chess.BLACK and er < rank):
-                        passed = False
-                        break
-            if passed:
-                pawn_struct_score += sign * PASSED_PAWN_BONUS
-
-        # Rook bonuses
-        for sq in board._board.pieces(chess.ROOK, color):
-            file = chess.square_file(sq)
-            rank = chess.square_rank(sq)
-            friendly_file = pawns_bb & chess.BB_FILES[file]
-            enemy_file = enemy_pawns_bb & chess.BB_FILES[file]
-            if not friendly_file:
-                if not enemy_file:
-                    rook_score += sign * ROOK_OPEN_FILE_BONUS
-                else:
-                    rook_score += sign * ROOK_SEMI_OPEN_FILE_BONUS
-
-            if (color == chess.WHITE and rank == 6) or (color == chess.BLACK and rank == 1):
-                rook_score += sign * ROOK_SEVENTH_BONUS
-
-    white_scale = 100 - MATERIAL_TAPER_RATIO * max(0, 3 - white_shield_count)
-    black_scale = 100 - MATERIAL_TAPER_RATIO * max(0, 3 - black_shield_count)
-    material_score = (white_material * white_scale // 100) - (black_material * black_scale // 100)
-
-    phase = min(phase, TOTAL_PHASE)
-    base = material_score + (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) // TOTAL_PHASE
-
-    tempo = 0
-    initiative = 0
-    if ply == 0:
-        tempo = TEMPO_BONUS if board.turn == "w" else -TEMPO_BONUS
-        initiative = (mobility_score * INITIATIVE_FACTOR) // 4
-
-    repetition = 0
-    if board._board.can_claim_threefold_repetition():
-        repetition = 2 * REPETITION_PENALTY
-    elif board._board.is_repetition(2):
-        repetition = REPETITION_PENALTY
-
-    mate_threat = 0
-    if ply <= 1:
-        count = 0
-        for m in board.generate_moves():
-            child = board.copy()
-            try:
-                child.push(m)
-            except InvalidMoveError:
-                continue
-            if child._board.is_checkmate():
-                count += 1
-                if count >= 2:
-                    break
-        if count >= 2:
-            mate_threat = MATE_THREAT_BONUS
-
-    sign = 1 if board.turn == "w" else -1
-    return (base + mobility_score + pawn_shield + castling_score + attacker_score +
-            tropism_score + pawn_struct_score + bishop_pair_score + rook_score +
-            space_score + pawn_storm_score + tempo + initiative + mate_threat -
-            sign * repetition)
 
 
 # --- Search ---------------------------------------------------------------
@@ -542,20 +306,13 @@ def _tt_set(key: int, value: _TTEntry) -> None:
         _TT_ARRAY[idx + 14:idx + 16] = move_data.to_bytes(2, 'little')
 
 
-def _eval_for_side(board: Board, ply: int) -> int:
+def _terminal_score(board: Board, ply: int) -> int:
+    """Return a basic score for terminal positions."""
     if board._board.is_checkmate():
         return -MATE_VALUE + ply
     if board._board.is_stalemate():
-        material = 0
-        for piece in board._board.piece_map().values():
-            val = PIECE_VALUES[piece.piece_type]
-            material += val if piece.color == chess.WHITE else -val
-        score = material if board.turn == "w" else -material
-        if score > 0:
-            return -MATE_VALUE
         return 0
-    val = evaluate(board, ply)
-    return val if board.turn == "w" else -val
+    return 0
 
 
 def _to_chess_move(move: Move) -> chess.Move:
@@ -629,7 +386,7 @@ def _mate_in_two(board: Board) -> bool:
 
 
 def _quiescence(board: Board, alpha: int, beta: int, ply: int) -> int:
-    stand_pat = _eval_for_side(board, ply)
+    stand_pat = _terminal_score(board, ply)
     if stand_pat >= beta:
         return beta
     if stand_pat > alpha:
@@ -714,7 +471,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     global _NODE_LIMIT
     if _NODE_LIMIT is not None:
         if _NODE_LIMIT <= 0:
-            return _eval_for_side(board, ply)
+            return _terminal_score(board, ply)
         _NODE_LIMIT -= 1
 
     if board.is_check() and depth < CHECK_EXTENSION_DEPTH:
@@ -727,7 +484,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
     if depth <= 0:
         return _quiescence(board, alpha, beta, ply)
     if board.is_game_over():
-        return _eval_for_side(board, ply)
+        return _terminal_score(board, ply)
 
     key = board.hash
     entry: Optional[_TTEntry] = _tt_get(key)
@@ -746,7 +503,7 @@ def _negamax(board: Board, depth: int, alpha: int, beta: int, ply: int,
         entry = _tt_get(key)
 
     if depth <= 2 and not board.is_check():
-        eval_static = _eval_for_side(board, ply)
+        eval_static = _terminal_score(board, ply)
         margin = 100 * depth
         if eval_static + margin <= alpha:
             return _quiescence(board, alpha, beta, ply)
